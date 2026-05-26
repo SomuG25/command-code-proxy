@@ -5,7 +5,16 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "node index.js"
+    "dev": "node index.js",
+    "test": "jest --verbose",
+    "test:watch": "jest --watch",
+    "setup": "node setup.js",
+    "restore": "node setup.js --restore",
+    "status": "node setup.js --status"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": ["**/tests/**/*.test.js"]
   },
   "keywords": [
     "claude-code",
@@ -22,5 +31,17 @@
   "license": "MIT",
   "engines": {
     "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SomuG25/command-code-proxy.git"
+  },
+  "bugs": {
+    "url": "https://github.com/SomuG25/command-code-proxy/issues"
+  },
+  "homepage": "https://github.com/SomuG25/command-code-proxy#readme",
+  "devDependencies": {
+    "dotenv": "^17.4.2",
+    "jest": "^30.4.2"
   }
 }

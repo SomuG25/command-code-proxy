@@ -1,17 +1,20 @@
 const crypto = require("crypto");
-const { ALL_MODELS } = require("./config");
+const { ALL_MODELS, MODEL_ALIASES } = require("./config");
 const { convertAnthropicToAlpha } = require("./converter");
 const { AlphaToAnthropicStreamConverter } = require("./stream");
 const { readBody, respond, respondError, forwardToAlpha } = require("./utils");
 const { searchWeb, formatSearchResults } = require("./websearch");
+const log = require("./logger");
 
 // ─── Model name normalization ────────────────────────────────────────────────
 // Claude Code sometimes sends versioned model names like "claude-haiku-4-5-20251001".
 // Command Code expects base names like "claude-haiku-4-5".
 function normalizeModel(model) {
-  if (!model) return "claude-sonnet-4-6";
-  // Strip date suffixes like -20251001
-  return model.replace(/-\d{8}$/, "");
+  if (!model) return process.env.CC_PROXY_DEFAULT_MODEL || "claude-sonnet-4-6";
+  // Strip date suffixes like -20251001 (e.g. claude-haiku-4-5-20251001 → claude-haiku-4-5)
+  const stripped = model.replace(/-\d{8}$/, "");
+  // Resolve short aliases (e.g. "deepseek" → "deepseek/deepseek-v4-pro")
+  return MODEL_ALIASES[stripped] || stripped;
 }
 // ─── Request Handlers ────────────────────────────────────────────────────────
 
@@ -52,8 +55,7 @@ async function handleMessages(req, res) {
   // Normalize model name in body before conversion
   body.model = model;
 
-  console.log(`  ├ model=${model} stream=${isStream}`);
-  console.log(`  ├ messages=${msgCount} tools=${toolCount}`);
+  log.model(model, isStream, msgCount, toolCount);
 
   // ── Handle server-side web_search requests ───────────────────────────
   // Claude Code sends these as separate requests with the web_search tool.
@@ -74,23 +76,15 @@ async function handleMessages(req, res) {
     const convertedToolCount = alphaBody.params.tools.length;
 
     if (convertedToolCount !== toolCount) {
-      console.log(
-        `  ├ tools: ${toolCount} → ${convertedToolCount} (${toolCount - convertedToolCount} skipped, built-in converted)`
-      );
+      log.debug(`tools: ${toolCount} → ${convertedToolCount} (${toolCount - convertedToolCount} skipped, built-in converted)`);
     }
 
-    // Debug: log message structure
-    const convertedMsgs = alphaBody.params.messages;
-    console.log(
-      `  ├ converted msgs: ${convertedMsgs.length} [${convertedMsgs.slice(0, 5).map(m => {
-        const ct = typeof m.content === "string" ? "str" : `arr(${m.content.length})`;
-        return `${m.role}:${ct}`;
-      }).join(", ")}${convertedMsgs.length > 5 ? ", ..." : ""}]`
-    );
+    log.debug(`converted msgs: ${convertedMsgs.length}`);
+    log.payload("converted messages", convertedMsgs.slice(0, 5));
 
     // Forward to Command Code (with abort signal)
     const upstream = await forwardToAlpha(alphaBody, ac.signal);
-    console.log(`  └ upstream status=${upstream.statusCode}`);
+    log.upstream(upstream.statusCode);
 
     // Handle upstream errors
     if (upstream.statusCode >= 400) {
@@ -106,7 +100,7 @@ async function handleMessages(req, res) {
   } catch (err) {
     // Suppress errors from client disconnect
     if (err.name === "AbortError" || ac.signal.aborted) return;
-    console.error(`  ✗ error: ${err.message}`);
+    log.error("Request error:", err.message);
     respondError(res, 500, "api_error", err.message);
   }
 }
@@ -119,7 +113,7 @@ function handleUpstreamError(upstream, res) {
   upstream.on("data", (c) => errChunks.push(c));
   upstream.on("end", () => {
     const raw = Buffer.concat(errChunks).toString();
-    console.error(`  ✗ upstream error: ${raw.slice(0, 300)}`);
+    log.error("Upstream error:", raw.slice(0, 300));
     respondError(res, upstream.statusCode, "api_error", raw.slice(0, 500));
   });
 }
@@ -146,9 +140,8 @@ function handleStreamResponse(upstream, res, model, ac) {
   });
 
   upstream.on("error", (err) => {
-    // Suppress "aborted" errors from client disconnects
     if (err.message === "aborted" || ac?.signal?.aborted) return;
-    console.error(`  ✗ stream error: ${err.message}`);
+    log.error("Stream error:", err.message);
     converter.flush();
     if (!res.writableEnded) res.end();
   });
@@ -297,11 +290,9 @@ async function handleServerSideSearch(body, res) {
 
   if (!userQuery) return false;
 
-  console.log(`  🔍 server-side web search: "${userQuery.slice(0, 80)}"`);
-
-  // Execute real search
+  log.search("DDG", userQuery, 0); // will be updated after
   const results = await searchWeb(userQuery);
-  console.log(`  🔍 got ${results.length} results`);
+  log.search(results[0]?.source || "search", userQuery, results.length);
 
   const isStream = body.stream === true;
   const msgId = `msg_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
@@ -475,13 +466,13 @@ async function enhanceWebSearchResults(messages) {
       const query = toolUse.input?.query;
       if (!query) continue;
 
-      console.log(`  🔍 executing web search: "${query}"`);
+      log.search("enhance", query, 0);
 
       // Execute real search
       const results = await searchWeb(query);
 
       if (results.length > 0) {
-        console.log(`  🔍 got ${results.length} results`);
+        log.search(results[0]?.source || "search", query, results.length);
         // Replace the empty content with real results
         block.content = [{ type: "text", text: formatSearchResults(results, query) }];
         block.is_error = false;

@@ -339,6 +339,4 @@ This project is licensed under the **MIT License** — see the [LICENSE](LICENSE
 
 **If this project saved you money, give it a ⭐**
 
-Made with ❤️ by [SomuG25](https://github.com/SomuG25)
-
 </div>

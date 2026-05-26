@@ -1,0 +1,515 @@
+const crypto = require("crypto");
+const { ALL_MODELS } = require("./config");
+const { convertAnthropicToAlpha } = require("./converter");
+const { AlphaToAnthropicStreamConverter } = require("./stream");
+const { readBody, respond, respondError, forwardToAlpha } = require("./utils");
+const { searchWeb, formatSearchResults } = require("./websearch");
+
+// ─── Model name normalization ────────────────────────────────────────────────
+// Claude Code sometimes sends versioned model names like "claude-haiku-4-5-20251001".
+// Command Code expects base names like "claude-haiku-4-5".
+function normalizeModel(model) {
+  if (!model) return "claude-sonnet-4-6";
+  // Strip date suffixes like -20251001
+  return model.replace(/-\d{8}$/, "");
+}
+// ─── Request Handlers ────────────────────────────────────────────────────────
+
+/**
+ * GET /v1/models — Return list of available models.
+ */
+function handleModels(req, res) {
+  respond(res, 200, {
+    object: "list",
+    data: ALL_MODELS.map((m) => ({
+      id: m.id,
+      object: "model",
+      created: Math.floor(Date.now() / 1000),
+      owned_by: m.provider,
+    })),
+  });
+}
+
+/**
+ * POST /v1/messages — Main endpoint. Receives Anthropic format, converts,
+ * forwards to /alpha/generate, and converts the response back.
+ */
+async function handleMessages(req, res) {
+  // Parse body
+  const rawBody = await readBody(req);
+  let body;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    return respondError(res, 400, "invalid_request_error", "Invalid JSON body");
+  }
+
+  const model = normalizeModel(body.model);
+  const isStream = body.stream === true;
+  const toolCount = (body.tools || []).length;
+  const msgCount = (body.messages || []).length;
+
+  // Normalize model name in body before conversion
+  body.model = model;
+
+  console.log(`  ├ model=${model} stream=${isStream}`);
+  console.log(`  ├ messages=${msgCount} tools=${toolCount}`);
+
+  // ── Handle server-side web_search requests ───────────────────────────
+  // Claude Code sends these as separate requests with the web_search tool.
+  // We execute the search and return results directly — no need to forward.
+  const serverSearchResult = await handleServerSideSearch(body, res);
+  if (serverSearchResult) return; // Already responded
+
+  // ── Intercept empty web_search results in conversation history ────────
+  await enhanceWebSearchResults(body.messages);
+
+  // Set up abort controller to cancel upstream when client disconnects
+  const ac = new AbortController();
+  req.on("close", () => ac.abort());
+
+  try {
+    // Convert Anthropic → Alpha format
+    const alphaBody = convertAnthropicToAlpha(body);
+    const convertedToolCount = alphaBody.params.tools.length;
+
+    if (convertedToolCount !== toolCount) {
+      console.log(
+        `  ├ tools: ${toolCount} → ${convertedToolCount} (${toolCount - convertedToolCount} skipped, built-in converted)`
+      );
+    }
+
+    // Debug: log message structure
+    const convertedMsgs = alphaBody.params.messages;
+    console.log(
+      `  ├ converted msgs: ${convertedMsgs.length} [${convertedMsgs.slice(0, 5).map(m => {
+        const ct = typeof m.content === "string" ? "str" : `arr(${m.content.length})`;
+        return `${m.role}:${ct}`;
+      }).join(", ")}${convertedMsgs.length > 5 ? ", ..." : ""}]`
+    );
+
+    // Forward to Command Code (with abort signal)
+    const upstream = await forwardToAlpha(alphaBody, ac.signal);
+    console.log(`  └ upstream status=${upstream.statusCode}`);
+
+    // Handle upstream errors
+    if (upstream.statusCode >= 400) {
+      return handleUpstreamError(upstream, res);
+    }
+
+    // Handle response
+    if (isStream) {
+      handleStreamResponse(upstream, res, model, ac);
+    } else {
+      handleNonStreamResponse(upstream, res, model);
+    }
+  } catch (err) {
+    // Suppress errors from client disconnect
+    if (err.name === "AbortError" || ac.signal.aborted) return;
+    console.error(`  ✗ error: ${err.message}`);
+    respondError(res, 500, "api_error", err.message);
+  }
+}
+
+/**
+ * Handle upstream error responses.
+ */
+function handleUpstreamError(upstream, res) {
+  const errChunks = [];
+  upstream.on("data", (c) => errChunks.push(c));
+  upstream.on("end", () => {
+    const raw = Buffer.concat(errChunks).toString();
+    console.error(`  ✗ upstream error: ${raw.slice(0, 300)}`);
+    respondError(res, upstream.statusCode, "api_error", raw.slice(0, 500));
+  });
+}
+
+/**
+ * Handle streaming response — convert Alpha SSE → Anthropic SSE.
+ */
+function handleStreamResponse(upstream, res, model, ac) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+
+  const converter = new AlphaToAnthropicStreamConverter(model, res);
+
+  upstream.on("data", (chunk) => {
+    converter.processChunk(chunk.toString());
+  });
+
+  upstream.on("end", () => {
+    converter.flush();
+    if (!res.writableEnded) res.end();
+  });
+
+  upstream.on("error", (err) => {
+    // Suppress "aborted" errors from client disconnects
+    if (err.message === "aborted" || ac?.signal?.aborted) return;
+    console.error(`  ✗ stream error: ${err.message}`);
+    converter.flush();
+    if (!res.writableEnded) res.end();
+  });
+}
+
+/**
+ * Handle non-streaming response — collect all events, build Anthropic response.
+ */
+function handleNonStreamResponse(upstream, res, model) {
+  const allEvents = [];
+  let sseBuffer = "";
+
+  upstream.on("data", (chunk) => {
+    sseBuffer += chunk.toString();
+    const lines = sseBuffer.split("\n");
+    sseBuffer = lines.pop() || "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        allEvents.push(JSON.parse(trimmed));
+      } catch {}
+    }
+  });
+
+  upstream.on("end", () => {
+    // Process remaining buffer
+    if (sseBuffer.trim()) {
+      try {
+        allEvents.push(JSON.parse(sseBuffer.trim()));
+      } catch {}
+    }
+
+    const anthResp = buildNonStreamingResponse(allEvents, model);
+    respond(res, 200, anthResp);
+  });
+}
+
+/**
+ * Build a complete Anthropic /v1/messages response from collected SSE events.
+ */
+function buildNonStreamingResponse(events, model) {
+  const content = [];
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let stopReason = "end_turn";
+  let currentText = "";
+
+  for (const event of events) {
+    switch (event.type) {
+      case "text-delta":
+        currentText += event.text;
+        break;
+
+      case "tool-call":
+        if (currentText) {
+          content.push({ type: "text", text: currentText });
+          currentText = "";
+        }
+        content.push({
+          type: "tool_use",
+          id: event.toolCallId,
+          name: event.toolName,
+          input: event.input || event.args || {},
+        });
+        break;
+
+      case "finish":
+        if (event.totalUsage) {
+          inputTokens = event.totalUsage.inputTokens || 0;
+          outputTokens = event.totalUsage.outputTokens || 0;
+        }
+        if (event.finishReason === "tool-calls") stopReason = "tool_use";
+        else if (event.finishReason === "length") stopReason = "max_tokens";
+        break;
+    }
+  }
+
+  if (currentText) {
+    content.push({ type: "text", text: currentText });
+  }
+  if (content.length === 0) {
+    content.push({ type: "text", text: "" });
+  }
+
+  return {
+    id: `msg_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`,
+    type: "message",
+    role: "assistant",
+    content,
+    model,
+    stop_reason: stopReason,
+    stop_sequence: null,
+    usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+  };
+}
+
+/**
+ * GET / or /health — Health check.
+ */
+function handleHealth(req, res) {
+  const { AUTH } = require("./config");
+  respond(res, 200, {
+    status: "ok",
+    proxy: "cc-proxy",
+    user: AUTH.userName,
+    models: ALL_MODELS.length,
+    endpoint: "/alpha/generate",
+  });
+}
+
+// ─── Server-Side Web Search ──────────────────────────────────────────────────
+
+/**
+ * Detect and handle server-side web search requests.
+ * Claude Code sends these as separate POST /v1/messages with:
+ *   - 1 message (the user query)
+ *   - 1 tool (web_search_20250305 type)
+ * We execute the search and return results in Anthropic's server_tool_use format.
+ *
+ * Returns true if we handled it, false if this isn't a search request.
+ */
+async function handleServerSideSearch(body, res) {
+  const tools = body.tools || [];
+
+  // Detect: does this request have a web_search built-in tool?
+  const wsToolIdx = tools.findIndex(
+    (t) => t.type === "web_search_20250305" || (t.name === "web_search" && !t.input_schema)
+  );
+  if (wsToolIdx === -1) return false;
+
+  // Get the user's query from the last message
+  const msgs = body.messages || [];
+  const lastMsg = msgs[msgs.length - 1];
+  if (!lastMsg) return false;
+
+  const userQuery =
+    typeof lastMsg.content === "string"
+      ? lastMsg.content
+      : Array.isArray(lastMsg.content)
+        ? lastMsg.content
+            .filter((b) => b.type === "text")
+            .map((b) => b.text)
+            .join(" ")
+        : "";
+
+  if (!userQuery) return false;
+
+  console.log(`  🔍 server-side web search: "${userQuery.slice(0, 80)}"`);
+
+  // Execute real search
+  const results = await searchWeb(userQuery);
+  console.log(`  🔍 got ${results.length} results`);
+
+  const isStream = body.stream === true;
+  const msgId = `msg_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
+  const toolUseId = `srvtoolu_${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`;
+
+  if (isStream) {
+    // Return as Anthropic SSE stream
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+
+    const write = (event) =>
+      res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+
+    // message_start
+    write({
+      type: "message_start",
+      message: {
+        id: msgId,
+        type: "message",
+        role: "assistant",
+        content: [],
+        model: body.model || "deepseek/deepseek-v4-pro",
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      },
+    });
+
+    // server_tool_use block (the search call)
+    write({
+      type: "content_block_start",
+      index: 0,
+      content_block: {
+        type: "server_tool_use",
+        id: toolUseId,
+        name: "web_search",
+        input: { query: userQuery },
+      },
+    });
+    write({ type: "content_block_stop", index: 0 });
+
+    // web_search_tool_result block (the results)
+    write({
+      type: "content_block_start",
+      index: 1,
+      content_block: {
+        type: "web_search_tool_result",
+        tool_use_id: toolUseId,
+        content: results.map((r) => ({
+          type: "web_search_result",
+          url: r.url,
+          title: r.title,
+          encrypted_content: r.snippet,
+          page_age: null,
+        })),
+      },
+    });
+    write({ type: "content_block_stop", index: 1 });
+
+    // Text block with a summary
+    const summaryText = results.length > 0
+      ? `I found ${results.length} results. Let me analyze them.\n`
+      : "I couldn't find any search results. Let me try a different approach.\n";
+
+    write({
+      type: "content_block_start",
+      index: 2,
+      content_block: { type: "text", text: "" },
+    });
+    write({
+      type: "content_block_delta",
+      index: 2,
+      delta: { type: "text_delta", text: summaryText },
+    });
+    write({ type: "content_block_stop", index: 2 });
+
+    // message_delta + stop
+    write({
+      type: "message_delta",
+      delta: { stop_reason: "end_turn", stop_sequence: null },
+      usage: { output_tokens: 50 },
+    });
+    write({ type: "message_stop" });
+
+    res.end();
+  } else {
+    // Non-streaming response
+    respond(res, 200, {
+      id: msgId,
+      type: "message",
+      role: "assistant",
+      content: [
+        {
+          type: "server_tool_use",
+          id: toolUseId,
+          name: "web_search",
+          input: { query: userQuery },
+        },
+        {
+          type: "web_search_tool_result",
+          tool_use_id: toolUseId,
+          content: results.map((r) => ({
+            type: "web_search_result",
+            url: r.url,
+            title: r.title,
+            encrypted_content: r.snippet,
+            page_age: null,
+          })),
+        },
+        {
+          type: "text",
+          text:
+            results.length > 0
+              ? `I found ${results.length} results. Let me analyze them.`
+              : "I couldn't find any search results.",
+        },
+      ],
+      model: body.model || "deepseek/deepseek-v4-pro",
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 0, output_tokens: 50 },
+    });
+  }
+
+  return true;
+}
+
+// ─── Web Search Enhancement ──────────────────────────────────────────────────
+
+
+/**
+ * Scan messages for empty web_search tool_results.
+ * When found, execute a real search and replace the content.
+ *
+ * Flow:
+ *   1. Model calls web_search → Claude Code gets tool_use
+ *   2. Claude Code tries to execute locally → gets 0 results
+ *   3. Claude Code sends tool_result with empty content
+ *   4. THIS function detects it, runs DuckDuckGo search, injects real results
+ *   5. Model now has actual search data to work with
+ */
+async function enhanceWebSearchResults(messages) {
+  if (!messages || messages.length === 0) return;
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+
+    // Only check user messages with array content (tool_results live here)
+    if (msg.role !== "user" || !Array.isArray(msg.content)) continue;
+
+    for (const block of msg.content) {
+      if (block.type !== "tool_result") continue;
+
+      // Find the matching tool_use in the previous assistant message
+      const prevMsg = messages[i - 1];
+      if (!prevMsg || prevMsg.role !== "assistant" || !Array.isArray(prevMsg.content)) continue;
+
+      const toolUse = prevMsg.content.find(
+        (b) => b.type === "tool_use" && b.id === block.tool_use_id && b.name === "web_search"
+      );
+      if (!toolUse) continue;
+
+      // Check if the result is empty/minimal
+      const resultText = extractResultText(block.content);
+      if (resultText.length > 100) continue; // Has real results, skip
+
+      // Get the search query
+      const query = toolUse.input?.query;
+      if (!query) continue;
+
+      console.log(`  🔍 executing web search: "${query}"`);
+
+      // Execute real search
+      const results = await searchWeb(query);
+
+      if (results.length > 0) {
+        console.log(`  🔍 got ${results.length} results`);
+        // Replace the empty content with real results
+        block.content = [{ type: "text", text: formatSearchResults(results, query) }];
+        block.is_error = false;
+      }
+    }
+  }
+}
+
+/**
+ * Extract plain text from a tool_result content field.
+ */
+function extractResultText(content) {
+  if (!content) return "";
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((c) => {
+        if (typeof c === "string") return c;
+        if (c.type === "text") return c.text || "";
+        return JSON.stringify(c);
+      })
+      .join(" ");
+  }
+  return JSON.stringify(content);
+}
+
+module.exports = {
+  handleModels,
+  handleMessages,
+  handleHealth,
+};

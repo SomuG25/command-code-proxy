@@ -1,0 +1,26 @@
+{
+  "name": "command-code-proxy",
+  "version": "1.0.0",
+  "description": "Proxy that lets Claude Code use Command Code's free API — access 25+ models (GPT, Gemini, DeepSeek, Qwen, etc.) through Claude Code's interface",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "keywords": [
+    "claude-code",
+    "command-code",
+    "proxy",
+    "anthropic",
+    "openai",
+    "deepseek",
+    "gemini",
+    "free-api",
+    "ai-models"
+  ],
+  "author": "SomuG25",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

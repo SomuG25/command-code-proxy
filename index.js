@@ -2,6 +2,8 @@ const http = require("http");
 const { PORT, AUTH, CLI_VERSION, ALL_MODELS } = require("./config");
 const { handleModels, handleMessages, handleHealth } = require("./handlers");
 const { respondError } = require("./utils");
+const log = require("./logger");
+const { countMessageTokens } = require("./tokenizer");
 
 // ─── Main Server ──────────────────────────────────────────────────────────────
 
@@ -18,9 +20,8 @@ const server = http.createServer(async (req, res) => {
 
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const pathname = url.pathname;
-  const timestamp = new Date().toLocaleTimeString();
 
-  console.log(`[${timestamp}] → ${req.method} ${pathname}`);
+  log.request(req.method, pathname);
 
   try {
     // Route requests
@@ -32,16 +33,15 @@ const server = http.createServer(async (req, res) => {
       return handleMessages(req, res);
     }
 
-    // Token counting — return a rough estimate
+    // Token counting — accurate BPE-calibrated estimation
     if (pathname === "/v1/messages/count_tokens" && req.method === "POST") {
       const { readBody, respond } = require("./utils");
       const raw = await readBody(req);
       try {
         const body = JSON.parse(raw);
-        const msgStr = JSON.stringify(body.messages || []);
-        // Rough estimate: ~4 chars per token
-        const tokens = Math.ceil(msgStr.length / 4);
-        return respond(res, 200, { input_tokens: tokens });
+        const result = countMessageTokens(body);
+        log.debug("token count:", result.input_tokens);
+        return respond(res, 200, result);
       } catch {
         return respond(res, 200, { input_tokens: 0 });
       }
@@ -60,7 +60,7 @@ const server = http.createServer(async (req, res) => {
     // 404
     respondError(res, 404, "not_found", `Unknown endpoint: ${pathname}`);
   } catch (err) {
-    console.error(`  ✗ unhandled error: ${err.message}`);
+    log.error("Unhandled server error:", err.message);
     respondError(res, 500, "api_error", err.message);
   }
 });
@@ -78,6 +78,7 @@ server.listen(PORT, () => {
   console.log("");
   console.log(`  User: ${AUTH.userName}`);
   console.log(`  CLI Version: ${CLI_VERSION}`);
+  console.log(`  Log Level: ${log.level}`);
   console.log("");
   console.log("Available models:");
   console.log("─────────────────────────────────────────────────────────");
@@ -97,7 +98,8 @@ server.listen(PORT, () => {
 
   console.log("");
   console.log("─────────────────────────────────────────────────────────");
-  console.log('Usage: claude --model "deepseek/deepseek-v4-pro"');
+  console.log('Usage: claude --model "deepseek" "your prompt"');
+  console.log("       claude --model "+ '"' +"gemini" + '"' + " \"your prompt\"");
   console.log("");
   console.log("Waiting for requests...\n");
 });
@@ -105,10 +107,11 @@ server.listen(PORT, () => {
 // ─── Graceful shutdown ───────────────────────────────────────────────────────
 
 process.on("SIGINT", () => {
-  console.log("\n🛑 Proxy shutting down...");
+  log.warn("Proxy shutting down (SIGINT)...");
   server.close(() => process.exit(0));
 });
 
 process.on("SIGTERM", () => {
+  log.warn("Proxy shutting down (SIGTERM)...");
   server.close(() => process.exit(0));
 });

@@ -1,4 +1,5 @@
 const { ANTHROPIC_BUILTIN_TOOLS } = require("./config");
+const log = require("./logger");
 
 // ─── Convert Anthropic /v1/messages → Command Code /alpha/generate ───────────
 //

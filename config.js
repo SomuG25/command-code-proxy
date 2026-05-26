@@ -1,8 +1,27 @@
 const fs = require("fs");
 const path = require("path");
 
+// ─── Load .env if present (optional, no hard dependency on dotenv pkg) ────────
+try {
+  const envPath = path.join(process.cwd(), ".env");
+  if (fs.existsSync(envPath)) {
+    const envContent = fs.readFileSync(envPath, "utf8");
+    for (const line of envContent.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eqIdx = trimmed.indexOf("=");
+      if (eqIdx === -1) continue;
+      const key = trimmed.slice(0, eqIdx).trim();
+      const val = trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, "");
+      if (key && !(key in process.env)) process.env[key] = val;
+    }
+  }
+} catch {
+  // .env loading is best-effort
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
-const PORT = 4141;
+const PORT = parseInt(process.env.CC_PROXY_PORT || "4141", 10);
 const CMD_BASE = "api.commandcode.ai";
 const ALPHA_ENDPOINT = "/alpha/generate";
 
@@ -24,17 +43,59 @@ function loadAuth() {
 }
 
 // ─── Detect CLI version for headers ──────────────────────────────────────────
+// Searches all common global npm install locations across Windows, Linux, macOS.
 function getCliVersion() {
-  try {
-    const pkgPath = path.join(
-      process.env.APPDATA || "",
-      "npm/node_modules/command-code/package.json"
-    );
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-    return pkg.version || "0.27.0";
-  } catch {
-    return "0.27.0";
+  const home = process.env.HOME || process.env.USERPROFILE || "";
+
+  const candidates = [
+    // Windows (npm global via APPDATA)
+    path.join(process.env.APPDATA || "", "npm", "node_modules", "command-code", "package.json"),
+    // Linux/macOS — standard global npm paths
+    "/usr/local/lib/node_modules/command-code/package.json",
+    "/usr/lib/node_modules/command-code/package.json",
+    // npm prefix (covers custom --prefix installs)
+    path.join(process.env.npm_config_prefix || "", "lib", "node_modules", "command-code", "package.json"),
+    // Homebrew on macOS (Apple Silicon & Intel)
+    "/opt/homebrew/lib/node_modules/command-code/package.json",
+    "/usr/local/Cellar/node/lib/node_modules/command-code/package.json",
+    // nvm — scan active version
+    path.join(home, ".nvm", "versions", "node", process.version, "lib", "node_modules", "command-code", "package.json"),
+    // Volta
+    path.join(home, ".volta", "tools", "shared", "node_modules", "command-code", "package.json"),
+    // pnpm global
+    path.join(home, ".local", "share", "pnpm", "global", "5", "node_modules", "command-code", "package.json"),
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(candidate, "utf8"));
+      if (pkg.version) return pkg.version;
+    } catch {
+      // Not found at this path — try next
+    }
   }
+
+  // Also try resolving from PATH via which
+  try {
+    const { execSync } = require("child_process");
+    const which = execSync("which command-code 2>/dev/null || where command-code 2>nul", {
+      encoding: "utf8",
+      timeout: 1000,
+    }).trim().split("\n")[0].trim();
+
+    if (which) {
+      // Walk up from the binary to find package.json
+      // e.g. /usr/local/bin/command-code → /usr/local/lib/node_modules/command-code/package.json
+      const binDir = path.dirname(which);
+      const libPkg = path.join(binDir, "..", "lib", "node_modules", "command-code", "package.json");
+      const pkg = JSON.parse(fs.readFileSync(libPkg, "utf8"));
+      if (pkg.version) return pkg.version;
+    }
+  } catch {
+    // which/where failed or package.json not found
+  }
+
+  return "0.27.0"; // Safe default fallback
 }
 
 // ─── Model registry ──────────────────────────────────────────────────────────
@@ -66,6 +127,27 @@ const ALL_MODELS = [
   { id: "qwen-3.7-max", name: "Qwen 3.7 Max", provider: "opensource" },
   { id: "step-3.5-flash", name: "Step 3.5 Flash", provider: "opensource" },
 ];
+
+// ─── Model aliases ────────────────────────────────────────────────────────────
+// Lets users type short names instead of exact model IDs.
+// e.g. claude --model "deepseek" → "deepseek/deepseek-v4-pro"
+const MODEL_ALIASES = {
+  // Provider shorthands
+  "deepseek":  "deepseek/deepseek-v4-pro",
+  "gemini":    "google/gemini-3.5-flash",
+  "gemini-lite": "google/gemini-3.1-flash-lite",
+  "gpt":       "gpt-5.4",
+  "gpt-mini":  "gpt-5.4-mini",
+  "qwen":      "qwen-3.7-max",
+  "kimi":      "moonshotai/kimi-k2.6",
+  "glm":       "glm-5.1",
+  "minimax":   "minimax-m2.7",
+  "step":      "step-3.5-flash",
+  // Anthropic aliases
+  "sonnet":    "claude-sonnet-4-6",
+  "haiku":     "claude-haiku-4-5",
+  "opus":      "claude-opus-4-7",
+};
 
 // ─── Anthropic built-in tool schemas ─────────────────────────────────────────
 // Claude Code sends these as special tools with a `type` field but no
@@ -136,5 +218,6 @@ module.exports = {
   AUTH,
   CLI_VERSION,
   ALL_MODELS,
+  MODEL_ALIASES,
   ANTHROPIC_BUILTIN_TOOLS,
 };

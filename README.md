@@ -1,37 +1,69 @@
-# ⚡ Command Code Proxy
+<div align="center">
 
-> **Use 25+ AI models through Claude Code's interface — completely free.**
+# Command Code Proxy
 
-A lightweight Node.js proxy that translates Claude Code's Anthropic API format into Command Code's `/alpha/generate` endpoint. This lets you use **GPT-5, Gemini, DeepSeek, Qwen, Kimi, and more** — all from within Claude Code's powerful coding interface.
+### Use 25+ AI models in Claude Code — for free.
 
-```
-Claude Code ──→ Proxy (localhost:4141) ──→ Command Code API
-                    │
-              Translates Anthropic ↔ Alpha format
-              Handles web search via DuckDuckGo
-              Fixes tool calls, message ordering
-```
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Node.js](https://img.shields.io/badge/Node.js-≥18-339933?logo=node.js&logoColor=white)](https://nodejs.org)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/SomuG25/command-code-proxy/pulls)
+[![GitHub stars](https://img.shields.io/github/stars/SomuG25/command-code-proxy?style=social)](https://github.com/SomuG25/command-code-proxy)
 
-## ✨ Features
+A lightweight proxy that sits between **Claude Code** and **Command Code's API**, letting you use GPT-5, Gemini, DeepSeek, Qwen, and 20+ other models — all from Claude Code's interface. Zero cost.
 
-- 🆓 **Free** — Uses Command Code's free "Go" plan. No API keys to buy.
-- 🤖 **25+ models** — Claude, GPT-5, Gemini, DeepSeek, Qwen, Kimi, and more
-- 🔍 **Web search** — Built-in DuckDuckGo search (works where Anthropic's server-side search can't)
-- 🛠️ **Full tool support** — File editing, code execution, web fetch all work
-- ⚡ **Streaming** — Real-time streaming responses
-- 🔄 **Auto-retry** — Retries on network errors (ECONNRESET, DNS failures)
-- 🧹 **Message healing** — Fixes orphaned tool calls from interrupted sessions
+[Getting Started](#-getting-started) •
+[Models](#-available-models) •
+[Features](#-features) •
+[Deploy](#%EF%B8%8F-deploy-to-cloud) •
+[Troubleshooting](#-troubleshooting)
+
+</div>
 
 ---
 
-## 📦 Quick Start
+## How It Works
+
+```
+┌─────────────┐                        ┌─────────────┐                       ┌──────────────┐
+│             │   Anthropic Messages    │             │    /alpha/generate     │              │
+│ Claude Code │ ─────────────────────→  │    Proxy    │  ──────────────────→   │ Command Code │
+│   (CLI)     │ ←─────────────────────  │   :4141     │  ←──────────────────   │     API      │
+│             │   SSE stream response   │             │    SSE stream          │              │
+└─────────────┘                        └──────┬──────┘                       └──────────────┘
+                                              │
+                                     ┌────────┴────────┐
+                                     │   DuckDuckGo    │
+                                     │  (web search)   │
+                                     └─────────────────┘
+```
+
+The proxy translates between Anthropic's API format and Command Code's Alpha format in real-time. Claude Code thinks it's talking to Anthropic's servers, but it's actually using any model you choose.
+
+---
+
+## ✨ Features
+
+| Feature | Description |
+|:---|:---|
+| **🆓 Free** | Uses Command Code's free "Go" plan. No API keys to buy. |
+| **🤖 25+ Models** | Claude, GPT-5, Gemini, DeepSeek, Qwen, Kimi, GLM, MiniMax, and more |
+| **🔍 Web Search** | Built-in DuckDuckGo search engine — works where Anthropic's can't |
+| **⚡ Streaming** | Real-time SSE streaming for fast responses |
+| **🛠️ Full Tool Support** | File editing, code execution, web fetch — everything works |
+| **🔄 Auto-Retry** | Retries on `ECONNRESET`, DNS failures, timeouts |
+| **🧹 Self-Healing** | Fixes orphaned tool calls from interrupted sessions automatically |
+| **🔒 Secure** | Auth credentials stay local — never hardcoded or transmitted |
+
+---
+
+## 🚀 Getting Started
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) v18 or higher
-- [Command Code CLI](https://commandcode.ai) account (free "Go" plan works)
+- **[Node.js](https://nodejs.org/)** v18+
+- **[Command Code CLI](https://commandcode.ai)** — free account
 
-### 1. Install Command Code CLI & Login
+### Step 1 — Install Command Code & Login
 
 ```bash
 npm install -g command-code
@@ -40,7 +72,7 @@ npx command-code
 
 This creates `~/.commandcode/auth.json` with your credentials. The proxy reads this file automatically.
 
-### 2. Clone & Run the Proxy
+### Step 2 — Clone & Start
 
 ```bash
 git clone https://github.com/SomuG25/command-code-proxy.git
@@ -48,7 +80,7 @@ cd command-code-proxy
 node index.js
 ```
 
-You should see:
+You'll see:
 
 ```
 ╔══════════════════════════════════════════════════════════╗
@@ -59,136 +91,131 @@ You should see:
 ╚══════════════════════════════════════════════════════════╝
 ```
 
-### 3. Configure Claude Code
-
-Point Claude Code to use the proxy as its API endpoint:
+### Step 3 — Point Claude Code to the Proxy
 
 ```bash
-# Set the API base URL to your proxy
 claude config set --global apiBaseUrl http://localhost:4141
-
-# Set any dummy API key (the proxy uses Command Code auth)
 claude config set --global apiKey "sk-proxy"
 ```
 
-### 4. Use Any Model
+### Step 4 — Use It
 
 ```bash
-# Start Claude Code with a specific model
 claude --model "deepseek/deepseek-v4-pro"
-
-# Or set a default model
-claude config set --global model "deepseek/deepseek-v4-pro"
 ```
 
-Then just use Claude Code normally! All tools (file editing, web search, code execution) work.
+That's it. All Claude Code tools (file editing, search, code execution) work normally.
 
 ---
 
 ## 🤖 Available Models
 
-| Provider | Models | Notes |
-|---|---|---|
-| **Anthropic** | `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5` | |
-| **OpenAI** | `gpt-5.5`, `gpt-5.4`, `gpt-5.3-codex`, `gpt-5.4-mini` | |
-| **Google** | `google/gemini-3.5-flash`, `google/gemini-3.1-flash-lite` | |
-| **DeepSeek** | `deepseek/deepseek-v4-pro`, `deepseek/deepseek-v4-flash` | Great for coding |
-| **Qwen** | `qwen-3.7-max`, `qwen-3.6-max-preview`, `qwen-3.6-plus` | |
-| **Kimi** | `moonshotai/kimi-k2.6`, `moonshotai/kimi-k2.5` | |
-| **Others** | `glm-5.1`, `glm-5`, `minimax-m2.7`, `minimax-m2.5`, `step-3.5-flash` | |
+<table>
+<tr><th>Provider</th><th>Models</th></tr>
+<tr>
+  <td><strong>Anthropic</strong></td>
+  <td><code>claude-opus-4-7</code> · <code>claude-opus-4-6</code> · <code>claude-sonnet-4-6</code> · <code>claude-haiku-4-5</code></td>
+</tr>
+<tr>
+  <td><strong>OpenAI</strong></td>
+  <td><code>gpt-5.5</code> · <code>gpt-5.4</code> · <code>gpt-5.3-codex</code> · <code>gpt-5.4-mini</code></td>
+</tr>
+<tr>
+  <td><strong>Google</strong></td>
+  <td><code>google/gemini-3.5-flash</code> · <code>google/gemini-3.1-flash-lite</code></td>
+</tr>
+<tr>
+  <td><strong>DeepSeek</strong></td>
+  <td><code>deepseek/deepseek-v4-pro</code> · <code>deepseek/deepseek-v4-flash</code></td>
+</tr>
+<tr>
+  <td><strong>Qwen</strong></td>
+  <td><code>qwen-3.7-max</code> · <code>qwen-3.6-max-preview</code> · <code>qwen-3.6-plus</code></td>
+</tr>
+<tr>
+  <td><strong>Moonshot</strong></td>
+  <td><code>moonshotai/kimi-k2.6</code> · <code>moonshotai/kimi-k2.5</code></td>
+</tr>
+<tr>
+  <td><strong>Others</strong></td>
+  <td><code>glm-5.1</code> · <code>glm-5</code> · <code>minimax-m2.7</code> · <code>minimax-m2.5</code> · <code>step-3.5-flash</code></td>
+</tr>
+</table>
 
-> **Tip:** Not all models may be available on the free "Go" plan. If you get a 403 error, try a different model.
+> **Note:** Model availability depends on your Command Code plan. The free "Go" plan supports most models. If you get a 403 error, try a different model.
 
 ---
 
 ## 🔍 Web Search
 
-The proxy includes a **built-in web search engine** powered by DuckDuckGo. When Claude Code asks the model to search the web:
+The proxy includes a **built-in web search engine** powered by DuckDuckGo.
 
-1. The proxy intercepts the search request
-2. Executes a real DuckDuckGo search (10 results)
-3. Returns results in Anthropic's `server_tool_use` format
-4. The model uses these results to answer your question
+When the model wants to search the web, the proxy:
 
-This works automatically — no configuration needed.
+1. **Intercepts** the `web_search` request from Claude Code
+2. **Executes** a real DuckDuckGo search (returns 10 results)
+3. **Returns** results in Anthropic's native `server_tool_use` format
+
+Claude Code displays it as `Web Search("query") — Did 1 search in 1s`. No configuration needed.
 
 ---
 
-## 🏗️ Architecture
+## 🏗️ Project Structure
 
 ```
-┌─────────────┐    Anthropic API     ┌─────────────┐    Alpha API     ┌──────────────┐
-│ Claude Code  │ ──────────────────→ │   Proxy      │ ──────────────→ │ Command Code │
-│ (CLI client) │ ←────────────────── │ :4141        │ ←────────────── │ API Server   │
-└─────────────┘    SSE stream        └──────┬───────┘    SSE stream   └──────────────┘
-                                            │
-                                   ┌────────┴────────┐
-                                   │  DuckDuckGo     │
-                                   │  (web search)   │
-                                   └─────────────────┘
+command-code-proxy/
+├── index.js          # HTTP server, routing, startup
+├── config.js         # Auth, model registry, tool schemas
+├── converter.js      # Anthropic ↔ Alpha format translation
+├── handlers.js       # Request handling, web search, abort control
+├── stream.js         # SSE stream converter (Alpha → Anthropic)
+├── utils.js          # HTTP helpers, retry logic
+├── websearch.js      # DuckDuckGo search integration
+├── package.json
+├── .gitignore
+└── LICENSE
 ```
 
-### Files
+### What the Proxy Handles
 
-| File | Description |
-|---|---|
-| `index.js` | HTTP server, routing, startup banner |
-| `config.js` | Auth loading, model registry, built-in tool schemas |
-| `converter.js` | Anthropic → Alpha message/tool format conversion |
-| `handlers.js` | Request handlers, web search interception, streaming |
-| `stream.js` | Alpha SSE → Anthropic SSE stream converter |
-| `utils.js` | HTTP helpers, retry logic, response utilities |
-| `websearch.js` | DuckDuckGo search engine integration |
-
-### What the Proxy Does
-
-1. **Format Translation** — Converts Anthropic's Messages API format to Command Code's Alpha format and back
-2. **Tool Conversion** — Translates built-in Anthropic tools (`web_search_20250305`, `text_editor_20250429`, etc.) into regular tool schemas
-3. **Message Healing** — Fixes orphaned tool calls from interrupted sessions by injecting placeholder results
-4. **Web Search** — Intercepts server-side web search requests and executes real DuckDuckGo searches
-5. **Model Normalization** — Strips version suffixes from model names (e.g., `claude-haiku-4-5-20251001` → `claude-haiku-4-5`)
-6. **Stream Conversion** — Converts Alpha's SSE events to Anthropic's SSE format in real-time
-7. **Error Recovery** — Auto-retries on transient network errors, handles client disconnects cleanly
+| Concern | How |
+|:---|:---|
+| **Format translation** | Converts Anthropic Messages API ↔ Command Code Alpha format |
+| **Tool conversion** | Translates built-in tools (`web_search_20250305`, `text_editor_20250429`, etc.) into standard schemas |
+| **Message healing** | Injects placeholder results for orphaned tool calls from interrupted sessions |
+| **Web search** | Intercepts server-side search requests → executes real DuckDuckGo queries |
+| **Model normalization** | Strips version suffixes (`claude-haiku-4-5-20251001` → `claude-haiku-4-5`) |
+| **Stream conversion** | Converts Alpha SSE → Anthropic SSE events in real-time |
+| **Error recovery** | Auto-retries on `ECONNRESET`, `ENOTFOUND`, `ETIMEDOUT`; handles client disconnects cleanly |
 
 ---
 
 ## ☁️ Deploy to Cloud
 
-### Deploy on a VPS (DigitalOcean, AWS, etc.)
+### Option 1 — VPS (DigitalOcean, AWS, Hetzner)
 
 ```bash
-# 1. SSH into your server
-ssh user@your-server
+# On your server:
+git clone https://github.com/SomuG25/command-code-proxy.git
+cd command-code-proxy
 
-# 2. Install Node.js
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
-
-# 3. Install Command Code CLI and login
+# Install Command Code CLI and login
 npm install -g command-code
 npx command-code
 
-# 4. Clone and run
-git clone https://github.com/SomuG25/command-code-proxy.git
-cd command-code-proxy
+# Start the proxy
 node index.js
 ```
 
-### Run with PM2 (Process Manager)
+### Option 2 — PM2 (Auto-Restart & Background)
 
 ```bash
-# Install PM2
 npm install -g pm2
-
-# Start the proxy (auto-restart on crash)
 pm2 start index.js --name cc-proxy
-
-# Auto-start on system boot
-pm2 startup
-pm2 save
+pm2 startup && pm2 save     # auto-start on boot
 ```
 
-### Run with Docker
+### Option 3 — Docker
 
 ```dockerfile
 FROM node:20-alpine
@@ -200,82 +227,118 @@ CMD ["node", "index.js"]
 
 ```bash
 docker build -t cc-proxy .
-docker run -d -p 4141:4141 -v ~/.commandcode:/root/.commandcode cc-proxy
+docker run -d -p 4141:4141 \
+  -v ~/.commandcode:/root/.commandcode \
+  cc-proxy
 ```
 
-> **Important:** Mount your `~/.commandcode` directory so the proxy can access your auth credentials.
+> **Important:** Mount `~/.commandcode` so the container can access your auth credentials.
 
-### Use Remotely
+### Connect Remotely
 
-If you deploy the proxy on a server, point Claude Code to that server:
+Once deployed, point Claude Code to your server:
 
 ```bash
-claude config set --global apiBaseUrl http://your-server-ip:4141
+claude config set --global apiBaseUrl http://your-server:4141
 claude config set --global apiKey "sk-proxy"
 ```
 
 ---
 
-## 🔧 Configuration
+## ⚙️ Configuration
 
-### Change Port
-
-Edit `config.js` and change the `PORT` constant:
-
-```javascript
-const PORT = 4141; // Change to your preferred port
-```
-
-### Change Default Model
-
-```bash
-claude config set --global model "qwen-3.7-max"
-# or pass it each time
-claude --model "gpt-5.4"
-```
+| Setting | How to Change |
+|:---|:---|
+| **Port** | Edit `PORT` in `config.js` (default: `4141`) |
+| **Default model** | `claude config set --global model "deepseek/deepseek-v4-pro"` |
+| **Per-session model** | `claude --model "gpt-5.4"` |
 
 ---
 
 ## 🐛 Troubleshooting
 
-### "Could not read ~/.commandcode/auth.json"
-You need to login to Command Code first:
+<details>
+<summary><strong>"Could not read ~/.commandcode/auth.json"</strong></summary>
+
+You need to install and login to Command Code first:
+
 ```bash
 npm install -g command-code
 npx command-code
 ```
 
-### 403 Model Not In Plan
-The model you selected isn't available on your plan. Try a different model:
+</details>
+
+<details>
+<summary><strong>403 — Model Not In Plan</strong></summary>
+
+The selected model isn't available on your plan. Try a different one:
+
 ```bash
 claude --model "deepseek/deepseek-v4-flash"
 ```
 
-### Web Search Shows "Did 0 searches"
-This means the proxy isn't running or Claude Code isn't routing through it. Make sure:
-1. The proxy is running (`node index.js`)
-2. `apiBaseUrl` is set: `claude config set --global apiBaseUrl http://localhost:4141`
+</details>
 
-### Connection Errors (ECONNRESET, ENOTFOUND)
-The proxy auto-retries once on transient network errors. If persistent, check your internet connection.
+<details>
+<summary><strong>Web Search shows "Did 0 searches"</strong></summary>
 
-### "Tool results are missing for tool calls"
-This happens when you interrupt Claude Code mid-response. The proxy automatically heals these orphaned tool calls on the next request.
+Make sure the proxy is running and Claude Code is routing through it:
+
+```bash
+# 1. Proxy running?
+node index.js
+
+# 2. API base URL set?
+claude config set --global apiBaseUrl http://localhost:4141
+```
+
+</details>
+
+<details>
+<summary><strong>"Tool results are missing for tool calls"</strong></summary>
+
+This happens when you interrupt Claude Code mid-response (e.g., pressing `Esc`). The proxy heals these automatically on the next request — just continue using it.
+
+</details>
+
+<details>
+<summary><strong>ECONNRESET / ENOTFOUND errors</strong></summary>
+
+The proxy retries once on transient network errors. If persistent, check your internet connection or try again.
+
+</details>
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Feel free to:
+
+- Open an [issue](https://github.com/SomuG25/command-code-proxy/issues) for bugs or feature requests
+- Submit a [pull request](https://github.com/SomuG25/command-code-proxy/pulls) with improvements
+- Star the repo ⭐ if you find it useful
 
 ---
 
 ## 📄 License
 
-MIT — see [LICENSE](LICENSE)
+This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
 
 ---
 
-## 🙏 Credits
+## 🙏 Acknowledgments
 
-- [Command Code](https://commandcode.ai) — Free AI API backend
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — Anthropic's CLI coding assistant
-- [DuckDuckGo](https://duckduckgo.com) — Web search engine
+- **[Command Code](https://commandcode.ai)** — Free AI API backend
+- **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** — Anthropic's CLI coding assistant
+- **[DuckDuckGo](https://duckduckgo.com)** — Privacy-first web search
 
 ---
 
-**⭐ Star this repo if it helped you!**
+<div align="center">
+
+**If this project saved you money, give it a ⭐**
+
+Made with ❤️ by [SomuG25](https://github.com/SomuG25)
+
+</div>

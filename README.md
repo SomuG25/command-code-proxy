@@ -148,15 +148,65 @@ That's it. All Claude Code tools (file editing, search, code execution) work nor
 
 ## 🔍 Web Search
 
-The proxy includes a **built-in web search engine** powered by DuckDuckGo.
+The proxy includes a **built-in web search engine** that intercepts search requests from Claude Code and returns real results.
 
-When the model wants to search the web, the proxy:
+### Default: DuckDuckGo (no setup needed)
 
-1. **Intercepts** the `web_search` request from Claude Code
-2. **Executes** a real DuckDuckGo search (returns 10 results)
-3. **Returns** results in Anthropic's native `server_tool_use` format
+Works out of the box — no API keys, no configuration. DuckDuckGo HTML scraping with 10 results.
 
-Claude Code displays it as `Web Search("query") — Did 1 search in 1s`. No configuration needed.
+### Upgrade: SearXNG (recommended)
+
+For **much better results**, connect a [SearXNG](https://github.com/searxng/searxng) instance. SearXNG aggregates **70+ search engines** (Google, Bing, DuckDuckGo, etc.) and returns clean JSON.
+
+**Option A — Docker (one command):**
+
+```bash
+docker run -d -p 8080:8080 \
+  -e SEARXNG_SECRET_KEY=supersecret \
+  searxng/searxng
+```
+
+Then start the proxy with:
+
+```bash
+SEARXNG_URL=http://localhost:8080 node index.js
+```
+
+**Option B — Docker Compose (proxy + SearXNG together):**
+
+```bash
+docker-compose up -d
+```
+
+This starts both SearXNG and the proxy, pre-configured to work together.
+
+**Option C — Remote instance (Railway, VPS):**
+
+Deploy SearXNG on Railway or any VPS, then:
+
+```bash
+SEARXNG_URL=https://search.yourserver.com node index.js
+```
+
+> **Note:** Your SearXNG instance must have JSON format enabled in `settings.yml`. The included `searxng-settings.yml` already has this configured.
+
+### How it works
+
+```
+Model requests web_search
+        ↓
+   Proxy intercepts
+        ↓
+┌── SearXNG configured? ──┐
+│  YES                     │  NO
+│  Query SearXNG JSON API  │  Scrape DuckDuckGo HTML
+│  (70+ engines)           │  (single engine)
+│       ↓                  │       ↓
+│  Got results?            │  Return results
+│  YES → return them       │
+│  NO  → fall back to DDG  │
+└──────────────────────────┘
+```
 
 ---
 
@@ -164,13 +214,16 @@ Claude Code displays it as `Web Search("query") — Did 1 search in 1s`. No conf
 
 ```
 command-code-proxy/
-├── index.js          # HTTP server, routing, startup
-├── config.js         # Auth, model registry, tool schemas
-├── converter.js      # Anthropic ↔ Alpha format translation
-├── handlers.js       # Request handling, web search, abort control
-├── stream.js         # SSE stream converter (Alpha → Anthropic)
-├── utils.js          # HTTP helpers, retry logic
-├── websearch.js      # DuckDuckGo search integration
+├── index.js                # HTTP server, routing, startup
+├── config.js               # Auth, model registry, tool schemas
+├── converter.js            # Anthropic ↔ Alpha format translation
+├── handlers.js             # Request handling, web search, abort control
+├── stream.js               # SSE stream converter (Alpha → Anthropic)
+├── utils.js                # HTTP helpers, retry logic
+├── websearch.js            # SearXNG + DuckDuckGo search engine
+├── Dockerfile              # Docker image for the proxy
+├── docker-compose.yml      # Run proxy + SearXNG together
+├── searxng-settings.yml    # SearXNG config (JSON API enabled)
 ├── package.json
 ├── .gitignore
 └── LICENSE
@@ -252,6 +305,7 @@ claude config set --global apiKey "sk-proxy"
 | **Port** | Edit `PORT` in `config.js` (default: `4141`) |
 | **Default model** | `claude config set --global model "deepseek/deepseek-v4-pro"` |
 | **Per-session model** | `claude --model "gpt-5.4"` |
+| **Search engine** | `SEARXNG_URL=http://localhost:8080 node index.js` |
 
 ---
 

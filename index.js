@@ -2,6 +2,7 @@ const http = require("http");
 const { PORT, AUTH, CLI_VERSION, ALL_MODELS } = require("./config");
 const { handleModels, handleMessages, handleHealth } = require("./handlers");
 const { respondError } = require("./utils");
+const { getSearchEngineStatus } = require("./websearch");
 
 // ─── Main Server ──────────────────────────────────────────────────────────────
 
@@ -78,6 +79,7 @@ server.listen(PORT, () => {
   console.log("");
   console.log(`  User: ${AUTH.userName}`);
   console.log(`  CLI Version: ${CLI_VERSION}`);
+  console.log(`  Search: ${getSearchEngineStatus()}`);
   console.log("");
   console.log("Available models:");
   console.log("─────────────────────────────────────────────────────────");

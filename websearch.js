@@ -1,27 +1,83 @@
 const https = require("https");
+const http = require("http");
 
-// ─── DuckDuckGo Web Search ───────────────────────────────────────────────────
-// Free, no API key, no rate limits for reasonable usage.
+// ─── Search Engine Configuration ─────────────────────────────────────────────
+// Set SEARXNG_URL env var to use SearXNG as primary search engine.
+// Falls back to DuckDuckGo if SearXNG is not configured or fails.
+
+const SEARXNG_URL = process.env.SEARXNG_URL || "";
 
 /**
- * Search the web using DuckDuckGo.
+ * Search the web — tries SearXNG first, falls back to DuckDuckGo.
  * @param {string} query - The search query.
- * @param {number} [maxResults=5] - Max number of results to return.
+ * @param {number} [maxResults=10] - Max number of results to return.
  * @returns {Promise<Array<{title: string, url: string, snippet: string}>>}
  */
 async function searchWeb(query, maxResults = 10) {
   if (!query || !query.trim()) return [];
 
+  // Try SearXNG first if configured
+  if (SEARXNG_URL) {
+    try {
+      const results = await searchSearXNG(query, maxResults);
+      if (results.length > 0) {
+        console.log(`  🔍 [searxng] got ${results.length} results`);
+        return results;
+      }
+      // SearXNG returned 0 results — fall through to DDG
+      console.log(`  🔍 [searxng] 0 results, falling back to DuckDuckGo`);
+    } catch (err) {
+      console.log(`  🔍 [searxng] failed: ${err.message}, falling back to DuckDuckGo`);
+    }
+  }
+
+  // Fallback: DuckDuckGo
   try {
-    const html = await httpGet(
-      `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
-    );
-    return parseDuckDuckGoResults(html, maxResults);
+    const results = await searchDuckDuckGo(query, maxResults);
+    console.log(`  🔍 [ddg] got ${results.length} results`);
+    return results;
   } catch (err) {
-    console.error(`  ⚕ web search failed: ${err.message}`);
+    console.error(`  ⚕ [ddg] search failed: ${err.message}`);
     return [];
   }
 }
+
+// ─── SearXNG Search ──────────────────────────────────────────────────────────
+
+/**
+ * Search using a SearXNG instance (JSON API).
+ * Requires SEARXNG_URL env var and JSON format enabled in settings.yml.
+ */
+async function searchSearXNG(query, maxResults = 10) {
+  const baseUrl = SEARXNG_URL.replace(/\/+$/, "");
+  const searchUrl = `${baseUrl}/search?q=${encodeURIComponent(query)}&format=json&categories=general`;
+
+  const data = await httpGetJson(searchUrl);
+
+  if (!data || !Array.isArray(data.results)) {
+    return [];
+  }
+
+  return data.results.slice(0, maxResults).map((r) => ({
+    title: r.title || "",
+    url: r.url || "",
+    snippet: r.content || "",
+  })).filter((r) => r.url && r.title);
+}
+
+// ─── DuckDuckGo Search ───────────────────────────────────────────────────────
+
+/**
+ * Search using DuckDuckGo HTML scraping (no API key needed).
+ */
+async function searchDuckDuckGo(query, maxResults = 10) {
+  const html = await httpGetText(
+    `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
+  );
+  return parseDuckDuckGoResults(html, maxResults);
+}
+
+// ─── Format helper ───────────────────────────────────────────────────────────
 
 /**
  * Format search results as a readable string for the model.
@@ -42,12 +98,71 @@ function formatSearchResults(results, query) {
   return lines.join("\n");
 }
 
-// ─── HTTP helper ─────────────────────────────────────────────────────────────
+/**
+ * Return the search engine status string for the startup banner.
+ */
+function getSearchEngineStatus() {
+  if (SEARXNG_URL) {
+    return `SearXNG (${SEARXNG_URL}) + DuckDuckGo fallback`;
+  }
+  return "DuckDuckGo (set SEARXNG_URL for better results)";
+}
 
-function httpGet(url, redirects = 3) {
+// ─── HTTP helpers ────────────────────────────────────────────────────────────
+
+/**
+ * GET a URL and return parsed JSON.
+ */
+function httpGetJson(url, redirects = 3) {
   return new Promise((resolve, reject) => {
     const parsedUrl = new URL(url);
-    const mod = parsedUrl.protocol === "https:" ? https : require("http");
+    const mod = parsedUrl.protocol === "https:" ? https : http;
+
+    const req = mod.get(
+      url,
+      {
+        headers: {
+          "User-Agent": "command-code-proxy/1.0",
+          Accept: "application/json",
+        },
+        timeout: 8000,
+      },
+      (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirects > 0) {
+          const nextUrl = res.headers.location.startsWith("http")
+            ? res.headers.location
+            : `${parsedUrl.protocol}//${parsedUrl.host}${res.headers.location}`;
+          res.resume();
+          return resolve(httpGetJson(nextUrl, redirects - 1));
+        }
+
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => {
+          try {
+            resolve(JSON.parse(Buffer.concat(chunks).toString()));
+          } catch {
+            reject(new Error("Invalid JSON response from SearXNG"));
+          }
+        });
+      }
+    );
+
+    req.on("error", reject);
+    req.on("timeout", () => {
+      req.destroy();
+      reject(new Error("SearXNG request timed out"));
+    });
+  });
+}
+
+/**
+ * GET a URL and return raw text (for DuckDuckGo HTML).
+ */
+function httpGetText(url, redirects = 3) {
+  return new Promise((resolve, reject) => {
+    const parsedUrl = new URL(url);
+    const mod = parsedUrl.protocol === "https:" ? https : http;
 
     const req = mod.get(
       url,
@@ -61,18 +176,12 @@ function httpGet(url, redirects = 3) {
         timeout: 10000,
       },
       (res) => {
-        // Follow redirects
-        if (
-          res.statusCode >= 300 &&
-          res.statusCode < 400 &&
-          res.headers.location &&
-          redirects > 0
-        ) {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirects > 0) {
           const nextUrl = res.headers.location.startsWith("http")
             ? res.headers.location
             : `${parsedUrl.protocol}//${parsedUrl.host}${res.headers.location}`;
-          res.resume(); // Drain the response
-          return resolve(httpGet(nextUrl, redirects - 1));
+          res.resume();
+          return resolve(httpGetText(nextUrl, redirects - 1));
         }
 
         const chunks = [];
@@ -89,14 +198,11 @@ function httpGet(url, redirects = 3) {
   });
 }
 
-// ─── HTML parser ─────────────────────────────────────────────────────────────
+// ─── DuckDuckGo HTML parser ──────────────────────────────────────────────────
 
 function parseDuckDuckGoResults(html, max) {
   const results = [];
 
-  // DuckDuckGo HTML search results structure:
-  // <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=ENCODED_URL&...">TITLE</a>
-  // <a class="result__snippet" href="...">SNIPPET</a>
   const linkRegex =
     /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
   const snippetRegex =
@@ -119,19 +225,13 @@ function parseDuckDuckGoResults(html, max) {
   return results;
 }
 
-/**
- * Decode DuckDuckGo redirect URLs.
- * They look like: //duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com&rut=...
- */
 function decodeDDGUrl(raw) {
   if (!raw) return "";
 
-  // Direct URL (not a DDG redirect)
   if (!raw.includes("duckduckgo.com/l/")) {
     return raw.startsWith("//") ? `https:${raw}` : raw;
   }
 
-  // Extract the uddg parameter
   const match = raw.match(/uddg=([^&]+)/);
   if (match) {
     try {
@@ -158,4 +258,4 @@ function stripHtml(s) {
     .trim();
 }
 
-module.exports = { searchWeb, formatSearchResults };
+module.exports = { searchWeb, formatSearchResults, getSearchEngineStatus };

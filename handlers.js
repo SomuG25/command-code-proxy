@@ -6,12 +6,16 @@ const { readBody, respond, respondError, forwardToAlpha } = require("./utils");
 const { searchWeb, formatSearchResults } = require("./websearch");
 
 // ─── Model name normalization ────────────────────────────────────────────────
-// Claude Code sometimes sends versioned model names like "claude-haiku-4-5-20251001".
-// Command Code expects base names like "claude-haiku-4-5".
+// Claude Code sometimes sends versioned model names like "claude-haiku-4-5-20251001"
+// or provider-prefixed names like "anthropic:claude-haiku-4-5".
+// Command Code expects bare names like "claude-haiku-4-5".
 function normalizeModel(model) {
   if (!model) return "claude-sonnet-4-6";
+  // Strip provider prefixes (anthropic:, openai:, google:, etc.)
+  model = model.replace(/^[a-zA-Z]+:/, "");
   // Strip date suffixes like -20251001
-  return model.replace(/-\d{8}$/, "");
+  model = model.replace(/-\d{8}$/, "");
+  return model;
 }
 // ─── Request Handlers ────────────────────────────────────────────────────────
 
@@ -297,10 +301,12 @@ async function handleServerSideSearch(body, res) {
 
   if (!userQuery) return false;
 
-  console.log(`  🔍 server-side web search: "${userQuery.slice(0, 80)}"`);
+  // Clean up the query for better DuckDuckGo results
+  const cleanedQuery = cleanSearchQuery(userQuery);
+  console.log(`  🔍 server-side web search: "${cleanedQuery.slice(0, 80)}"`);
 
   // Execute real search
-  const results = await searchWeb(userQuery);
+  const results = await searchWeb(cleanedQuery);
   console.log(`  🔍 got ${results.length} results`);
 
   const isStream = body.stream === true;
@@ -506,6 +512,48 @@ function extractResultText(content) {
       .join(" ");
   }
   return JSON.stringify(content);
+}
+
+// ─── Search Query Cleanup ────────────────────────────────────────────────────
+
+/**
+ * Clean up web search queries for better DuckDuckGo results.
+ * The model often sends overly specific or prefixed queries like:
+ *   "Perform a web search for the query: gemini live api..."
+ *   'gemini live api "inputTranscription" "outputTranscription"'
+ * DuckDuckGo chokes on long quoted strings and meta-prefixes.
+ */
+function cleanSearchQuery(query) {
+  if (!query) return "";
+
+  // Remove common meta-prefixes the model adds
+  query = query
+    .replace(/^Perform a web search for the query:\s*/i, "")
+    .replace(/^Search the web for:\s*/i, "")
+    .replace(/^Search for:\s*/i, "")
+    .replace(/^Web search:\s*/i, "")
+    .replace(/^Please search for:\s*/i, "")
+    .trim();
+
+  // Remove excessive exact-match quotes that DDG can't handle well
+  // e.g., 'gemini "inputTranscription" "outputTranscription" "config"'
+  // Count quoted segments — if more than 2, remove all quotes
+  const quoteCount = (query.match(/"/g) || []).length;
+  if (quoteCount > 4) {
+    query = query.replace(/"/g, "");
+  }
+
+  // Remove site: operators (DDG handles them differently)
+  // Keep the domain as a keyword instead
+  query = query.replace(/site:(\S+)/g, "$1");
+
+  // Cap query length — DDG returns bad results for very long queries
+  if (query.length > 150) {
+    // Try to cut at a word boundary
+    query = query.slice(0, 150).replace(/\s+\S*$/, "");
+  }
+
+  return query.trim();
 }
 
 module.exports = {

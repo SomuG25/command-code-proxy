@@ -501,10 +501,11 @@ async function enhanceWebSearchResults(messages) {
       const resultText = extractResultText(block.content);
       if (resultText.length > 100) continue; // Has real results, skip
 
-      // Get the search query
-      const query = toolUse.input?.query;
-      if (!query) continue;
+      // Get the search query and clean it up
+      const rawQuery = toolUse.input?.query;
+      if (!rawQuery) continue;
 
+      const query = cleanSearchQuery(rawQuery);
       console.log(`  🔍 executing web search: "${query}"`);
 
       // Execute real search

@@ -13,7 +13,7 @@ const { searchWeb, formatSearchResults } = require("./websearch");
 // IMPORTANT: Command Code does NOT serve Anthropic's own models (claude-*).
 // Claude Code uses claude-haiku internally for background tasks (titles, summaries).
 // We remap those to a fast, cheap model that actually works.
-const FALLBACK_MODEL = "deepseek/deepseek-v4-flash";
+const FALLBACK_MODEL = "deepseek/deepseek-v4-pro";
 
 function normalizeModel(model) {
   if (!model) return FALLBACK_MODEL;

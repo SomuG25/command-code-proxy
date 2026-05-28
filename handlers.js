@@ -8,13 +8,23 @@ const { searchWeb, formatSearchResults } = require("./websearch");
 // ─── Model name normalization ────────────────────────────────────────────────
 // Claude Code sometimes sends versioned model names like "claude-haiku-4-5-20251001"
 // or provider-prefixed names like "anthropic:claude-haiku-4-5".
-// Command Code expects bare names like "claude-haiku-4-5".
+// Command Code expects bare names like "deepseek/deepseek-v4-pro".
+//
+// IMPORTANT: Command Code does NOT serve Anthropic's own models (claude-*).
+// Claude Code uses claude-haiku internally for background tasks (titles, summaries).
+// We remap those to a fast, cheap model that actually works.
+const FALLBACK_MODEL = "deepseek/deepseek-v4-flash";
+
 function normalizeModel(model) {
-  if (!model) return "claude-sonnet-4-6";
+  if (!model) return FALLBACK_MODEL;
   // Strip provider prefixes (anthropic:, openai:, google:, etc.)
   model = model.replace(/^[a-zA-Z]+:/, "");
   // Strip date suffixes like -20251001
   model = model.replace(/-\d{8}$/, "");
+  // Remap Anthropic models → fallback (Command Code can't serve them)
+  if (model.startsWith("claude-")) {
+    return FALLBACK_MODEL;
+  }
   return model;
 }
 // ─── Request Handlers ────────────────────────────────────────────────────────

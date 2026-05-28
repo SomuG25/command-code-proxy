@@ -230,14 +230,21 @@ function buildNonStreamingResponse(events, model) {
         });
         break;
 
-      case "finish":
-        if (event.totalUsage) {
-          inputTokens = event.totalUsage.inputTokens || 0;
-          outputTokens = event.totalUsage.outputTokens || 0;
+      case "finish": {
+        const usage = event.totalUsage || event.usage || {};
+        if (Object.keys(usage).length > 0) {
+          console.log(`  📊 usage: ${JSON.stringify(usage)}`);
         }
+        inputTokens =
+          usage.inputTokens || usage.promptTokens || usage.prompt_tokens ||
+          usage.input_tokens || 0;
+        outputTokens =
+          usage.outputTokens || usage.completionTokens || usage.completion_tokens ||
+          usage.output_tokens || 0;
         if (event.finishReason === "tool-calls") stopReason = "tool_use";
         else if (event.finishReason === "length") stopReason = "max_tokens";
         break;
+      }
     }
   }
 

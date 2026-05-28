@@ -215,10 +215,17 @@ class AlphaToAnthropicStreamConverter {
       this.closeTextBlock();
     }
 
-    // Extract usage
-    const usage = event.totalUsage || {};
-    this.inputTokens = usage.inputTokens || 0;
-    this.outputTokens = usage.outputTokens || 0;
+    // Extract usage — Command Code may use different field names
+    const usage = event.totalUsage || event.usage || {};
+    if (Object.keys(usage).length > 0) {
+      console.log(`  📊 usage: ${JSON.stringify(usage)}`);
+    }
+    this.inputTokens =
+      usage.inputTokens || usage.promptTokens || usage.prompt_tokens ||
+      usage.input_tokens || 0;
+    this.outputTokens =
+      usage.outputTokens || usage.completionTokens || usage.completion_tokens ||
+      usage.output_tokens || 0;
 
     // Map finish reason
     let stopReason = "end_turn";
@@ -234,7 +241,7 @@ class AlphaToAnthropicStreamConverter {
     this.writeEvent({
       type: "message_delta",
       delta: { stop_reason: stopReason, stop_sequence: null },
-      usage: { output_tokens: this.outputTokens },
+      usage: { input_tokens: this.inputTokens, output_tokens: this.outputTokens },
     });
     this.writeEvent({ type: "message_stop" });
   }

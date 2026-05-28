@@ -22,13 +22,14 @@ const crypto = require("crypto");
 //
 
 class AlphaToAnthropicStreamConverter {
-  constructor(model, res) {
+  constructor(model, res, estimatedInputTokens = 0) {
     this.model = model;
     this.res = res;
     this.started = false;
     this.contentIndex = -1;
     this.textBlockOpen = false;
     this.reasoningBlockOpen = false;
+    this.estimatedInputTokens = estimatedInputTokens;
     this.inputTokens = 0;
     this.outputTokens = 0;
     this.buffer = "";
@@ -58,7 +59,7 @@ class AlphaToAnthropicStreamConverter {
         model: this.model,
         stop_reason: null,
         stop_sequence: null,
-        usage: { input_tokens: 0, output_tokens: 0 },
+        usage: { input_tokens: this.estimatedInputTokens, output_tokens: 0 },
       },
     });
   }

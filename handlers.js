@@ -113,7 +113,7 @@ async function handleMessages(req, res) {
 
     // Handle response
     if (isStream) {
-      handleStreamResponse(upstream, res, model, ac);
+      handleStreamResponse(upstream, res, model, ac, body);
     } else {
       handleNonStreamResponse(upstream, res, model);
     }
@@ -141,14 +141,21 @@ function handleUpstreamError(upstream, res) {
 /**
  * Handle streaming response — convert Alpha SSE → Anthropic SSE.
  */
-function handleStreamResponse(upstream, res, model, ac) {
+function handleStreamResponse(upstream, res, model, ac, body) {
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
   });
 
-  const converter = new AlphaToAnthropicStreamConverter(model, res);
+  // Estimate input tokens from request body so message_start has a real number
+  // (Claude Code reads input_tokens from message_start, which we send before knowing actual usage)
+  const msgStr = JSON.stringify(body?.messages || []);
+  const toolStr = JSON.stringify(body?.tools || []);
+  const sysStr = typeof body?.system === "string" ? body.system : JSON.stringify(body?.system || "");
+  const estimatedInputTokens = Math.ceil((msgStr.length + toolStr.length + sysStr.length) / 4);
+
+  const converter = new AlphaToAnthropicStreamConverter(model, res, estimatedInputTokens);
 
   upstream.on("data", (chunk) => {
     converter.processChunk(chunk.toString());

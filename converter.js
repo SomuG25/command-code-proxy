@@ -84,26 +84,30 @@ function convertMessages(messages) {
   const result = [];
 
   for (const msg of messages) {
+    // Convert 'system' role → 'user' (Command Code only accepts user/assistant/tool)
+    // Claude Code sometimes injects system messages mid-conversation for context
+    const role = msg.role === "system" ? "user" : msg.role;
+
     // Simple string content — pass through directly
     if (typeof msg.content === "string") {
-      result.push({ role: msg.role, content: msg.content });
+      result.push({ role, content: msg.content });
       continue;
     }
 
     if (!Array.isArray(msg.content)) {
-      result.push({ role: msg.role, content: JSON.stringify(msg.content) });
+      result.push({ role, content: JSON.stringify(msg.content) });
       continue;
     }
 
     // Array content — need to split by type
-    if (msg.role === "user") {
+    if (role === "user") {
       convertUserMessage(msg.content, result);
-    } else if (msg.role === "assistant") {
+    } else if (role === "assistant") {
       convertAssistantMessage(msg.content, result);
     } else {
       // Other roles — convert blocks
       result.push({
-        role: msg.role,
+        role,
         content: msg.content.map(convertGenericBlock),
       });
     }

@@ -13,7 +13,8 @@ A lightweight proxy that sits between **Claude Code** and **Command Code's API**
 
 [Getting Started](#-getting-started) •
 [Models](#-available-models) •
-[Features](#-features) •
+[Web Search](#-web-search) •
+[Configuration](#%EF%B8%8F-configuration) •
 [Deploy](#%EF%B8%8F-deploy-to-cloud) •
 [Troubleshooting](#-troubleshooting)
 
@@ -32,6 +33,7 @@ A lightweight proxy that sits between **Claude Code** and **Command Code's API**
 └─────────────┘                        └──────┬──────┘                       └──────────────┘
                                               │
                                      ┌────────┴────────┐
+                                     │    SearXNG /    │
                                      │   DuckDuckGo    │
                                      │  (web search)   │
                                      └─────────────────┘
@@ -46,12 +48,13 @@ The proxy translates between Anthropic's API format and Command Code's Alpha for
 | Feature | Description |
 |:---|:---|
 | **🆓 Free** | Uses Command Code's free "Go" plan. No API keys to buy. |
-| **🤖 25+ Models** | Claude, GPT-5, Gemini, DeepSeek, Qwen, Kimi, GLM, MiniMax, and more |
-| **🔍 Web Search** | Built-in DuckDuckGo search engine — works where Anthropic's can't |
+| **🤖 25+ Models** | GPT-5, Gemini, DeepSeek, Qwen, Kimi, GLM, MiniMax, and more |
+| **🔍 SearXNG Search** | Aggregates 70+ search engines (Google, Bing, DDG) with DuckDuckGo fallback |
 | **⚡ Streaming** | Real-time SSE streaming for fast responses |
 | **🛠️ Full Tool Support** | File editing, code execution, web fetch — everything works |
-| **🔄 Auto-Retry** | Retries on `ECONNRESET`, DNS failures, timeouts |
+| **🔄 Auto-Retry** | Retries on transient errors: "service unavailable", ECONNRESET, timeouts |
 | **🧹 Self-Healing** | Fixes orphaned tool calls from interrupted sessions automatically |
+| **🔀 Model Remapping** | Auto-remaps `claude-*` models → DeepSeek v4 Pro |
 | **🔒 Secure** | Auth credentials stay local — never hardcoded or transmitted |
 
 ---
@@ -89,6 +92,10 @@ You'll see:
 ║  Claude Code ──→ Proxy ──→ /alpha/generate             ║
 ║  Uses CLI endpoint (works on FREE Go plan!)            ║
 ╚══════════════════════════════════════════════════════════╝
+
+  User: yourname
+  CLI Version: 0.27.0
+  Search: DuckDuckGo (set SEARXNG_URL for better results)
 ```
 
 ### Step 3 — Point Claude Code to the Proxy
@@ -112,10 +119,6 @@ That's it. All Claude Code tools (file editing, search, code execution) work nor
 
 <table>
 <tr><th>Provider</th><th>Models</th></tr>
-<tr>
-  <td><strong>Anthropic</strong></td>
-  <td><code>claude-opus-4-7</code> · <code>claude-opus-4-6</code> · <code>claude-sonnet-4-6</code> · <code>claude-haiku-4-5</code></td>
-</tr>
 <tr>
   <td><strong>OpenAI</strong></td>
   <td><code>gpt-5.5</code> · <code>gpt-5.4</code> · <code>gpt-5.3-codex</code> · <code>gpt-5.4-mini</code></td>
@@ -142,6 +145,8 @@ That's it. All Claude Code tools (file editing, search, code execution) work nor
 </tr>
 </table>
 
+> **Note:** Claude Code sometimes sends `claude-*` model names internally (for titles, summaries). The proxy auto-remaps these to `deepseek/deepseek-v4-pro` since Command Code can't serve Anthropic models.
+
 > **Note:** Model availability depends on your Command Code plan. The free "Go" plan supports most models. If you get a 403 error, try a different model.
 
 ---
@@ -152,7 +157,7 @@ The proxy includes a **built-in web search engine** that intercepts search reque
 
 ### Default: DuckDuckGo (no setup needed)
 
-Works out of the box — no API keys, no configuration. DuckDuckGo HTML scraping with 10 results.
+Works out of the box — no API keys, no configuration.
 
 ### Upgrade: SearXNG (recommended)
 
@@ -160,15 +165,23 @@ For **much better results**, connect a [SearXNG](https://github.com/searxng/sear
 
 **Option A — Docker (one command):**
 
+> ⚠️ **Important:** You MUST mount the `searxng-settings.yml` file. Without it, SearXNG returns HTML instead of JSON and the proxy will fall back to DuckDuckGo.
+
 ```bash
-docker run -d -p 8080:8080 \
-  -e SEARXNG_SECRET_KEY=supersecret \
-  searxng/searxng
+# Windows (PowerShell) — run from the proxy directory:
+docker run -d -p 8080:8080 -v "${PWD}/searxng-settings.yml:/etc/searxng/settings.yml" --name searxng searxng/searxng
+
+# Linux/Mac:
+docker run -d -p 8080:8080 -v ./searxng-settings.yml:/etc/searxng/settings.yml --name searxng searxng/searxng
 ```
 
-Then start the proxy with:
+Then start the proxy with SearXNG:
 
 ```bash
+# Windows (PowerShell):
+$env:SEARXNG_URL="http://localhost:8080"; node index.js
+
+# Linux/Mac:
 SEARXNG_URL=http://localhost:8080 node index.js
 ```
 
@@ -182,13 +195,15 @@ This starts both SearXNG and the proxy, pre-configured to work together.
 
 **Option C — Remote instance (Railway, VPS):**
 
-Deploy SearXNG on Railway or any VPS, then:
+Deploy SearXNG on Railway or any VPS, then point the proxy at it:
 
 ```bash
+# PowerShell:
+$env:SEARXNG_URL="https://search.yourserver.com"; node index.js
+
+# Linux/Mac:
 SEARXNG_URL=https://search.yourserver.com node index.js
 ```
-
-> **Note:** Your SearXNG instance must have JSON format enabled in `settings.yml`. The included `searxng-settings.yml` already has this configured.
 
 ### How it works
 
@@ -207,6 +222,27 @@ Model requests web_search
 │  NO  → fall back to DDG  │
 └──────────────────────────┘
 ```
+
+---
+
+## ⚙️ Configuration
+
+| Setting | How to Change | Default |
+|:---|:---|:---|
+| **Proxy port** | Edit `PORT` in `config.js` | `4141` |
+| **Default model** | `claude config set --global model "deepseek/deepseek-v4-pro"` | `deepseek/deepseek-v4-pro` |
+| **Per-session model** | `claude --model "gpt-5.4"` | — |
+| **Search engine** | Set `SEARXNG_URL` env var before starting | DuckDuckGo |
+| **Max search results** | Edit `maxResults` in `websearch.js` | `10` |
+| **Auto-retry** | Built-in, retries 2x on transient SSE errors | Enabled |
+| **Auth credentials** | Auto-read from `~/.commandcode/auth.json` | — |
+| **Claude model fallback** | Edit `FALLBACK_MODEL` in `handlers.js` | `deepseek/deepseek-v4-pro` |
+
+### Environment Variables
+
+| Variable | Description | Example |
+|:---|:---|:---|
+| `SEARXNG_URL` | URL of your SearXNG instance | `http://localhost:8080` |
 
 ---
 
@@ -236,10 +272,12 @@ command-code-proxy/
 | **Format translation** | Converts Anthropic Messages API ↔ Command Code Alpha format |
 | **Tool conversion** | Translates built-in tools (`web_search_20250305`, `text_editor_20250429`, etc.) into standard schemas |
 | **Message healing** | Injects placeholder results for orphaned tool calls from interrupted sessions |
-| **Web search** | Intercepts server-side search requests → executes real DuckDuckGo queries |
-| **Model normalization** | Strips version suffixes (`claude-haiku-4-5-20251001` → `claude-haiku-4-5`) |
+| **Search engine** | SearXNG (70+ engines) with automatic DuckDuckGo fallback |
+| **Model normalization** | Strips version suffixes and provider prefixes (`anthropic:claude-haiku-4-5-20251001` → remapped) |
+| **Model remapping** | Anthropic models (`claude-*`) → `deepseek/deepseek-v4-pro` fallback |
 | **Stream conversion** | Converts Alpha SSE → Anthropic SSE events in real-time |
-| **Error recovery** | Auto-retries on `ECONNRESET`, `ENOTFOUND`, `ETIMEDOUT`; handles client disconnects cleanly |
+| **Auto-retry** | Retries on transient SSE errors ("service unavailable", "overloaded") and network errors |
+| **System messages** | Converts `system` role messages → `user` role (Command Code only accepts user/assistant/tool) |
 
 ---
 
@@ -258,6 +296,10 @@ npx command-code
 
 # Start the proxy
 node index.js
+
+# (Optional) Start with SearXNG
+docker run -d -p 8080:8080 -v ./searxng-settings.yml:/etc/searxng/settings.yml --name searxng searxng/searxng
+SEARXNG_URL=http://localhost:8080 node index.js
 ```
 
 ### Option 2 — PM2 (Auto-Restart & Background)
@@ -270,20 +312,20 @@ pm2 startup && pm2 save     # auto-start on boot
 
 ### Option 3 — Docker
 
-```dockerfile
-FROM node:20-alpine
-WORKDIR /app
-COPY . .
-EXPOSE 4141
-CMD ["node", "index.js"]
-```
-
 ```bash
 docker build -t cc-proxy .
 docker run -d -p 4141:4141 \
   -v ~/.commandcode:/root/.commandcode \
   cc-proxy
 ```
+
+### Option 4 — Docker Compose (Proxy + SearXNG)
+
+```bash
+docker-compose up -d
+```
+
+This starts both the proxy and SearXNG together, pre-configured.
 
 > **Important:** Mount `~/.commandcode` so the container can access your auth credentials.
 
@@ -295,17 +337,6 @@ Once deployed, point Claude Code to your server:
 claude config set --global apiBaseUrl http://your-server:4141
 claude config set --global apiKey "sk-proxy"
 ```
-
----
-
-## ⚙️ Configuration
-
-| Setting | How to Change |
-|:---|:---|
-| **Port** | Edit `PORT` in `config.js` (default: `4141`) |
-| **Default model** | `claude config set --global model "deepseek/deepseek-v4-pro"` |
-| **Per-session model** | `claude --model "gpt-5.4"` |
-| **Search engine** | `SEARXNG_URL=http://localhost:8080 node index.js` |
 
 ---
 
@@ -335,6 +366,42 @@ claude --model "deepseek/deepseek-v4-flash"
 </details>
 
 <details>
+<summary><strong>"Service temporarily unavailable"</strong></summary>
+
+This is a transient error from Command Code's backend. The proxy now **auto-retries up to 2 times** with a 2-second delay. If it keeps happening:
+
+1. Wait 30 seconds and try again
+2. The upstream server may be overloaded — try during off-peak hours
+3. Check the proxy logs for `↻ retrying after transient error...`
+
+</details>
+
+<details>
+<summary><strong>"SearXNG: Invalid JSON response"</strong></summary>
+
+You must mount the `searxng-settings.yml` file when starting the Docker container. Without it, SearXNG returns HTML instead of JSON.
+
+```bash
+# Correct:
+docker run -d -p 8080:8080 -v "${PWD}/searxng-settings.yml:/etc/searxng/settings.yml" --name searxng searxng/searxng
+
+# Wrong (will return HTML, not JSON):
+docker run -d -p 8080:8080 searxng/searxng
+```
+
+</details>
+
+<details>
+<summary><strong>400 BAD_REQUEST: "Invalid option at params.messages"</strong></summary>
+
+This usually means the conversation history has grown too long or contains unsupported message formats. Fix:
+
+1. Start a new Claude Code session with `/clear`
+2. If persistent, restart the proxy
+
+</details>
+
+<details>
 <summary><strong>Web Search shows "Did 0 searches"</strong></summary>
 
 Make sure the proxy is running and Claude Code is routing through it:
@@ -346,6 +413,8 @@ node index.js
 # 2. API base URL set?
 claude config set --global apiBaseUrl http://localhost:4141
 ```
+
+If using SearXNG, verify it's running: `curl http://localhost:8080/search?q=test&format=json`
 
 </details>
 
@@ -385,6 +454,7 @@ This project is licensed under the **MIT License** — see the [LICENSE](LICENSE
 
 - **[Command Code](https://commandcode.ai)** — Free AI API backend
 - **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** — Anthropic's CLI coding assistant
+- **[SearXNG](https://github.com/searxng/searxng)** — Privacy-respecting, open-source meta search engine
 - **[DuckDuckGo](https://duckduckgo.com)** — Privacy-first web search
 
 ---

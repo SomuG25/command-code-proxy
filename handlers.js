@@ -113,7 +113,7 @@ async function handleMessages(req, res) {
 
     // Handle response
     if (isStream) {
-      handleStreamResponse(upstream, res, model, ac, body);
+      handleStreamResponse(upstream, res, model, ac, body, alphaBody);
     } else {
       handleNonStreamResponse(upstream, res, model);
     }
@@ -140,8 +140,14 @@ function handleUpstreamError(upstream, res) {
 
 /**
  * Handle streaming response — convert Alpha SSE → Anthropic SSE.
+ * Detects transient SSE errors (service unavailable, overloaded) and retries
+ * automatically when no data has been written to the client yet.
  */
-function handleStreamResponse(upstream, res, model, ac, body) {
+function handleStreamResponse(upstream, res, model, ac, body, alphaBody) {
+  const MAX_RETRIES = 2;
+  const RETRY_DELAY_MS = 2000;
+  const TRANSIENT_PATTERNS = /temporarily unavailable|overloaded|try again/i;
+
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
@@ -155,24 +161,94 @@ function handleStreamResponse(upstream, res, model, ac, body) {
   const sysStr = typeof body?.system === "string" ? body.system : JSON.stringify(body?.system || "");
   const estimatedInputTokens = Math.ceil((msgStr.length + toolStr.length + sysStr.length) / 4);
 
-  const converter = new AlphaToAnthropicStreamConverter(model, res, estimatedInputTokens);
+  function attachStream(src, retryCount) {
+    const converter = new AlphaToAnthropicStreamConverter(model, res, estimatedInputTokens);
+    let retried = false;
 
-  upstream.on("data", (chunk) => {
-    converter.processChunk(chunk.toString());
-  });
+    src.on("data", (chunk) => {
+      if (retried) return;
+      const text = chunk.toString();
 
-  upstream.on("end", () => {
-    converter.flush();
-    if (!res.writableEnded) res.end();
-  });
+      // Check for transient SSE error before the converter has written anything
+      if (!converter.started && retryCount < MAX_RETRIES) {
+        // Parse each line to look for an error event
+        const lines = text.split("\n");
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            const evt = JSON.parse(trimmed);
+            if (evt.type === "error") {
+              const errMsg = typeof evt.error === "string"
+                ? evt.error
+                : evt.error?.message || JSON.stringify(evt.error);
+              if (TRANSIENT_PATTERNS.test(errMsg)) {
+                retried = true;
+                src.destroy();
+                console.log(`  ↻ retrying after transient error... (attempt ${retryCount + 1}/${MAX_RETRIES})`);
+                setTimeout(async () => {
+                  try {
+                    const newUpstream = await forwardToAlpha(alphaBody, ac.signal);
+                    console.log(`  └ retry upstream status=${newUpstream.statusCode}`);
+                    if (newUpstream.statusCode >= 400) {
+                      // Can't retry an HTTP-level error, just forward it as text
+                      const errChunks = [];
+                      newUpstream.on("data", (c) => errChunks.push(c));
+                      newUpstream.on("end", () => {
+                        const raw = Buffer.concat(errChunks).toString();
+                        console.error(`  ✗ retry upstream error: ${raw.slice(0, 300)}`);
+                        converter.ensureStarted();
+                        converter.openTextBlock();
+                        converter.res.write(
+                          `event: content_block_delta\ndata: ${JSON.stringify({
+                            type: "content_block_delta",
+                            index: converter.contentIndex,
+                            delta: { type: "text_delta", text: `Error: ${raw.slice(0, 500)}` },
+                          })}\n\n`
+                        );
+                        converter.closeTextBlock();
+                        converter.flush();
+                        if (!res.writableEnded) res.end();
+                      });
+                    } else {
+                      attachStream(newUpstream, retryCount + 1);
+                    }
+                  } catch (retryErr) {
+                    if (retryErr.name === "AbortError" || ac.signal.aborted) return;
+                    console.error(`  ✗ retry failed: ${retryErr.message}`);
+                    converter.flush();
+                    if (!res.writableEnded) res.end();
+                  }
+                }, RETRY_DELAY_MS);
+                return;
+              }
+            }
+          } catch {
+            // Not JSON, ignore
+          }
+        }
+      }
 
-  upstream.on("error", (err) => {
-    // Suppress "aborted" errors from client disconnects
-    if (err.message === "aborted" || ac?.signal?.aborted) return;
-    console.error(`  ✗ stream error: ${err.message}`);
-    converter.flush();
-    if (!res.writableEnded) res.end();
-  });
+      converter.processChunk(text);
+    });
+
+    src.on("end", () => {
+      if (retried) return;
+      converter.flush();
+      if (!res.writableEnded) res.end();
+    });
+
+    src.on("error", (err) => {
+      if (retried) return;
+      // Suppress "aborted" errors from client disconnects
+      if (err.message === "aborted" || ac?.signal?.aborted) return;
+      console.error(`  ✗ stream error: ${err.message}`);
+      converter.flush();
+      if (!res.writableEnded) res.end();
+    });
+  }
+
+  attachStream(upstream, 0);
 }
 
 /**

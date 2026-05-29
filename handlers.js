@@ -144,7 +144,7 @@ function handleUpstreamError(upstream, res) {
  * automatically when no data has been written to the client yet.
  */
 function handleStreamResponse(upstream, res, model, ac, body, alphaBody) {
-  const MAX_RETRIES = 2;
+  const MAX_RETRIES = 5;
   const RETRY_DELAY_MS = 2000;
   const TRANSIENT_PATTERNS = /temporarily unavailable|overloaded|try again/i;
 

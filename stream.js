@@ -33,6 +33,8 @@ class AlphaToAnthropicStreamConverter {
     this.inputTokens = 0;
     this.outputTokens = 0;
     this.buffer = "";
+    this.hasTextContent = false;    // Track if any text was emitted
+    this.reasoningText = "";       // Accumulate reasoning for fallback
   }
 
   /** Write a single Anthropic SSE event to the response. */
@@ -137,6 +139,7 @@ class AlphaToAnthropicStreamConverter {
 
   handleTextDelta(event) {
     this.openTextBlock();
+    this.hasTextContent = true;
     this.writeEvent({
       type: "content_block_delta",
       index: this.contentIndex,
@@ -157,10 +160,12 @@ class AlphaToAnthropicStreamConverter {
   }
 
   handleReasoningDelta(event) {
+    const text = event.text || "";
+    this.reasoningText += text;
     this.writeEvent({
       type: "content_block_delta",
       index: this.contentIndex,
-      delta: { type: "thinking_delta", thinking: event.text || "" },
+      delta: { type: "thinking_delta", thinking: text },
     });
   }
 
@@ -208,6 +213,20 @@ class AlphaToAnthropicStreamConverter {
   handleFinish(event) {
     this.closeTextBlock();
     this.closeReasoningBlock();
+
+    // If model only produced reasoning (thinking) with no text output,
+    // copy reasoning into a text block. This fixes /compact and other
+    // features that expect text content (not just thinking blocks).
+    if (!this.hasTextContent && this.reasoningText.length > 0) {
+      console.log(`  ℹ no text output, converting ${this.reasoningText.length} chars of reasoning to text`);
+      this.openTextBlock();
+      this.writeEvent({
+        type: "content_block_delta",
+        index: this.contentIndex,
+        delta: { type: "text_delta", text: this.reasoningText },
+      });
+      this.closeTextBlock();
+    }
 
     // If nothing was ever sent, send an empty text block
     if (!this.started) {

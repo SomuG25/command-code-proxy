@@ -106,11 +106,71 @@ server.listen(PORT, () => {
 
 // ─── Graceful shutdown ───────────────────────────────────────────────────────
 
+let keepAliveTimer = null;
+
 process.on("SIGINT", () => {
   console.log("\n🛑 Proxy shutting down...");
+  if (keepAliveTimer) clearInterval(keepAliveTimer);
   server.close(() => process.exit(0));
 });
 
 process.on("SIGTERM", () => {
+  if (keepAliveTimer) clearInterval(keepAliveTimer);
   server.close(() => process.exit(0));
+});
+
+// ─── Network Keep-Alive ──────────────────────────────────────────────────────
+// Prevents WiFi power saving and hotspot timeouts from killing the connection.
+// Runs a lightweight DNS resolve + HTTPS HEAD every 30 seconds to keep:
+//   - DNS cache warm (prevents ENOTFOUND after laptop sleep)
+//   - WiFi adapter active (prevents power saving disconnect)
+//   - Hotspot connection alive (prevents phone from dropping idle devices)
+
+const dns = require("dns");
+const https = require("https");
+const { CMD_BASE } = require("./config");
+
+const KEEPALIVE_INTERVAL = 30_000; // 30 seconds
+
+function keepAlivePing() {
+  // Step 1: DNS resolve (warms the DNS cache)
+  dns.resolve4(CMD_BASE, (dnsErr, addresses) => {
+    if (dnsErr) {
+      console.log(`  💤 keep-alive: DNS failed (${dnsErr.code || dnsErr.message}) — network may be asleep`);
+      return;
+    }
+
+    // Step 2: HTTPS HEAD (keeps TCP + WiFi alive)
+    const req = https.request(
+      {
+        hostname: CMD_BASE,
+        port: 443,
+        path: "/",
+        method: "HEAD",
+        timeout: 5000,
+      },
+      (res) => {
+        res.resume(); // drain response
+      }
+    );
+
+    req.on("error", () => {
+      // Silently ignore — the DNS resolve already did the job
+    });
+
+    req.on("timeout", () => {
+      req.destroy();
+    });
+
+    req.end();
+  });
+}
+
+// Start keep-alive after server boots
+server.on("listening", () => {
+  keepAliveTimer = setInterval(keepAlivePing, KEEPALIVE_INTERVAL);
+  // Run first ping immediately
+  keepAlivePing();
+  console.log(`  🏓 Keep-alive ping: every ${KEEPALIVE_INTERVAL / 1000}s → ${CMD_BASE}`);
+  console.log("");
 });

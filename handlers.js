@@ -146,7 +146,7 @@ function handleUpstreamError(upstream, res) {
 function handleStreamResponse(upstream, res, model, ac, body, alphaBody) {
   const MAX_RETRIES = 25;
   const RETRY_DELAY_MS = 2000;
-  const TRANSIENT_PATTERNS = /temporarily unavailable|overloaded|try again/i;
+  const TRANSIENT_PATTERNS = /temporarily unavailable|overloaded|try again|network connection lost|connection reset|socket hang up|ECONNRESET|timeout|rate limit|too many requests|internal server error|bad gateway|service unavailable|gateway timeout/i;
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream",

@@ -27,12 +27,7 @@ function normalizeModel(model) {
   }
   return model;
 }
-// ─── Idle Auto-Block ─────────────────────────────────────────────────────────
-// Blocks background requests after IDLE_TIMEOUT_MS of no user activity.
-// Resumes instantly when user sends a real message.
-const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-let lastUserActivity = Date.now();
-let idleWarningShown = false;
+// ─── Request Classification ─────────────────────────────────────────────────
 
 /**
  * Detect what type of request this is based on patterns.
@@ -104,47 +99,9 @@ async function handleMessages(req, res) {
 
   // ── Classify and tag the request ──────────────────────────────────────
   const requestType = classifyRequest(body);
-  const isBackground = requestType !== "👤 user";
 
   console.log(`  ├ model=${model} stream=${isStream}`);
   console.log(`  ├ messages=${msgCount} tools=${toolCount} [${requestType}]`);
-
-  // ── Idle auto-block ───────────────────────────────────────────────────
-  // If this is a user request, update activity timestamp
-  if (!isBackground) {
-    lastUserActivity = Date.now();
-    idleWarningShown = false;
-  }
-
-  const idleMs = Date.now() - lastUserActivity;
-  if (isBackground && idleMs > IDLE_TIMEOUT_MS) {
-    if (!idleWarningShown) {
-      console.log(`  ⛔ IDLE BLOCK: rejecting background requests (idle ${Math.round(idleMs / 1000)}s)`);
-      console.log(`  ⛔ Send a message in Claude Code to resume`);
-      idleWarningShown = true;
-    } else {
-      console.log(`  ⛔ blocked [${requestType}]`);
-    }
-    // Return empty response to stop token drain
-    if (isStream) {
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      });
-      const msgId = `msg_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
-      const writeSSE = (evt) => res.write(`event: ${evt.type}\ndata: ${JSON.stringify(evt)}\n\n`);
-      writeSSE({ type: "message_start", message: { id: msgId, type: "message", role: "assistant", content: [], model, stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
-      writeSSE({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
-      writeSSE({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "[idle — proxy paused background requests]" } });
-      writeSSE({ type: "content_block_stop", index: 0 });
-      writeSSE({ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { input_tokens: 0, output_tokens: 0 } });
-      writeSSE({ type: "message_stop" });
-      return res.end();
-    } else {
-      return respond(res, 200, { type: "message", role: "assistant", content: [{ type: "text", text: "[idle]" }], model, stop_reason: "end_turn", usage: { input_tokens: 0, output_tokens: 0 } });
-    }
-  }
 
   // ── Handle server-side web_search requests ───────────────────────────
   // Claude Code sends these as separate requests with the web_search tool.

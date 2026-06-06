@@ -1,6 +1,29 @@
 const crypto = require("crypto");
 
-// ─── Alpha SSE → Anthropic SSE Stream Converter ──────────────────────────────
+// ─── Session Token Counter ────────────────────────────────────────────────────
+// Tracks cumulative token usage across the entire proxy session.
+const sessionStats = {
+  totalInputTokens: 0,
+  totalOutputTokens: 0,
+  totalCachedTokens: 0,
+  totalRequests: 0,
+  startTime: Date.now(),
+};
+
+function formatTokenCount(n) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return `${n}`;
+}
+
+function getSessionSummary() {
+  const elapsed = Math.round((Date.now() - sessionStats.startTime) / 1000);
+  const mins = Math.floor(elapsed / 60);
+  const secs = elapsed % 60;
+  const time = mins > 0 ? `${mins}m${secs}s` : `${secs}s`;
+  return `📈 session: ${formatTokenCount(sessionStats.totalInputTokens)} in (${formatTokenCount(sessionStats.totalCachedTokens)} cached) | ${formatTokenCount(sessionStats.totalOutputTokens)} out | ${sessionStats.totalRequests} reqs | ${time}`;
+}
+
 //
 // Command Code's /alpha/generate returns SSE events in this format:
 //   { type: "text-delta", text: "..." }
@@ -246,6 +269,15 @@ class AlphaToAnthropicStreamConverter {
     this.outputTokens =
       usage.outputTokens || usage.completionTokens || usage.completion_tokens ||
       usage.output_tokens || 0;
+    const cachedTokens =
+      usage.cachedInputTokens || usage.inputTokenDetails?.cacheReadTokens || 0;
+
+    // Accumulate session stats
+    sessionStats.totalInputTokens += this.inputTokens;
+    sessionStats.totalOutputTokens += this.outputTokens;
+    sessionStats.totalCachedTokens += cachedTokens;
+    sessionStats.totalRequests++;
+    console.log(`  ${getSessionSummary()}`);
 
     // Map finish reason
     let stopReason = "end_turn";
@@ -331,4 +363,4 @@ class AlphaToAnthropicStreamConverter {
   }
 }
 
-module.exports = { AlphaToAnthropicStreamConverter };
+module.exports = { AlphaToAnthropicStreamConverter, sessionStats, getSessionSummary };

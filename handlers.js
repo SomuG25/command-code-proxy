@@ -266,7 +266,7 @@ function handleStreamResponse(upstream, res, model, ac, body, alphaBody) {
                     converter.flush();
                     if (!res.writableEnded) res.end();
                   }
-                }, RETRY_DELAY_MS);
+                }, delayMs);
                 return;
               }
             }
@@ -276,7 +276,7 @@ function handleStreamResponse(upstream, res, model, ac, body, alphaBody) {
         }
       }
 
-      converter.processChunk(text);
+      if (!retried) converter.processChunk(text);
     });
 
     src.on("end", () => {
@@ -287,8 +287,32 @@ function handleStreamResponse(upstream, res, model, ac, body, alphaBody) {
 
     src.on("error", (err) => {
       if (retried) return;
-      // Suppress "aborted" errors from client disconnects
       if (err.message === "aborted" || ac?.signal?.aborted) return;
+      // TCP-level errors (ECONNRESET, ENOTFOUND, etc.) — treat as transient and retry
+      const isTcpTransient = /ECONNRESET|ENOTFOUND|ETIMEDOUT|ECONNREFUSED|socket hang up/i.test(err.message);
+      if (isTcpTransient && retryCount < MAX_FAST_RETRIES) {
+        retried = true;
+        src.destroy();
+        console.log(`  ↻ retrying after TCP error (attempt ${retryCount + 1}/${MAX_FAST_RETRIES}, wait 2s): ${err.message}`);
+        setTimeout(async () => {
+          try {
+            const newUpstream = await forwardToAlpha(alphaBody, ac.signal);
+            console.log(`  └ retry upstream status=${newUpstream.statusCode}`);
+            if (newUpstream.statusCode >= 400) {
+              converter.flush();
+              if (!res.writableEnded) res.end();
+            } else {
+              attachStream(newUpstream, retryCount + 1);
+            }
+          } catch (retryErr) {
+            if (retryErr.name === "AbortError" || ac.signal.aborted) return;
+            console.error(`  ✗ TCP retry failed: ${retryErr.message}`);
+            converter.flush();
+            if (!res.writableEnded) res.end();
+          }
+        }, FAST_RETRY_DELAY_MS);
+        return;
+      }
       console.error(`  ✗ stream error: ${err.message}`);
       converter.flush();
       if (!res.writableEnded) res.end();

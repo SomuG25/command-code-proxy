@@ -178,9 +178,14 @@ function handleUpstreamError(upstream, res) {
  * automatically when no data has been written to the client yet.
  */
 function handleStreamResponse(upstream, res, model, ac, body, alphaBody) {
-  const MAX_RETRIES = 25;
-  const RETRY_DELAY_MS = 2000;
-  const TRANSIENT_PATTERNS = /temporarily unavailable|overloaded|try again|network connection lost|connection reset|socket hang up|ECONNRESET|timeout|rate limit|too many requests|internal server error|bad gateway|service unavailable|gateway timeout/i;
+  // Fast transient errors: retry quickly (2s delay, up to 25 times)
+  const FAST_RETRY_PATTERNS = /temporarily unavailable|overloaded|try again|network connection lost|connection reset|socket hang up|ECONNRESET|internal server error|bad gateway|service unavailable|gateway timeout/i;
+  // Rate limit errors: exponential backoff (start 10s, double each time, max 5 retries)
+  const RATE_LIMIT_PATTERNS = /rate limit|too many requests|quota|429/i;
+  const MAX_FAST_RETRIES = 25;
+  const MAX_RATE_RETRIES = 5;
+  const FAST_RETRY_DELAY_MS = 2000;
+  const RATE_RETRY_BASE_MS = 10000; // 10s base, doubles each retry
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -204,7 +209,8 @@ function handleStreamResponse(upstream, res, model, ac, body, alphaBody) {
       const text = chunk.toString();
 
       // Check for transient SSE error before the converter has written anything
-      if (!converter.started && retryCount < MAX_RETRIES) {
+      const isRateLimit = false; // will be set below per-error
+      if (!converter.started) {
         // Parse each line to look for an error event
         const lines = text.split("\n");
         for (const line of lines) {
@@ -216,10 +222,17 @@ function handleStreamResponse(upstream, res, model, ac, body, alphaBody) {
               const errMsg = typeof evt.error === "string"
                 ? evt.error
                 : evt.error?.message || JSON.stringify(evt.error);
-              if (TRANSIENT_PATTERNS.test(errMsg)) {
+              const isRateLimitErr = RATE_LIMIT_PATTERNS.test(errMsg);
+              const isFastErr = FAST_RETRY_PATTERNS.test(errMsg);
+              const maxRetries = isRateLimitErr ? MAX_RATE_RETRIES : MAX_FAST_RETRIES;
+              if ((isRateLimitErr || isFastErr) && retryCount < maxRetries) {
                 retried = true;
                 src.destroy();
-                console.log(`  ↻ retrying after transient error... (attempt ${retryCount + 1}/${MAX_RETRIES})`);
+                const delayMs = isRateLimitErr
+                  ? Math.min(RATE_RETRY_BASE_MS * Math.pow(2, retryCount), 120000) // 10s→20s→40s→80s→120s
+                  : FAST_RETRY_DELAY_MS;
+                const kind = isRateLimitErr ? "rate limit" : "transient";
+                console.log(`  ↻ retrying after ${kind} error (attempt ${retryCount + 1}/${maxRetries}, wait ${delayMs / 1000}s): ${errMsg.slice(0, 80)}`);
                 setTimeout(async () => {
                   try {
                     const newUpstream = await forwardToAlpha(alphaBody, ac.signal);

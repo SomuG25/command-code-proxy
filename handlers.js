@@ -10,19 +10,27 @@ const { searchWeb, formatSearchResults } = require("./websearch");
 // or provider-prefixed names like "anthropic:claude-haiku-4-5".
 // Command Code expects bare names like "deepseek/deepseek-v4-pro".
 //
-// IMPORTANT: Command Code does NOT serve Anthropic's own models (claude-*).
-// Claude Code uses claude-haiku internally for background tasks (titles, summaries).
-// We remap those to a fast, cheap model that actually works.
+// IMPORTANT: Claude Code uses claude-haiku internally for background tasks
+// (titles, summaries). Those come with date suffixes like "claude-haiku-4-5-20251001".
+// If the user explicitly picks a claude model via /model (e.g. "claude-opus-4-6"),
+// we pass it through. Only remap unknown/background claude models to fallback.
 const FALLBACK_MODEL = "deepseek/deepseek-v4-pro";
+
+// Build a Set of known model IDs for fast lookup
+const KNOWN_MODEL_IDS = new Set(ALL_MODELS.map(m => m.id));
 
 function normalizeModel(model) {
   if (!model) return FALLBACK_MODEL;
   // Strip provider prefixes (anthropic:, openai:, google:, etc.)
   model = model.replace(/^[a-zA-Z]+:/, "");
   // Strip date suffixes like -20251001
-  model = model.replace(/-\d{8}$/, "");
-  // Remap Anthropic models → fallback (Command Code can't serve them)
+  const stripped = model.replace(/-\d{8}$/, "");
+  // If the model (with or without date suffix) is in our registry, pass through
+  if (KNOWN_MODEL_IDS.has(model)) return model;
+  if (KNOWN_MODEL_IDS.has(stripped)) return stripped;
+  // Unknown claude-* model → background task → remap to fallback
   if (model.startsWith("claude-")) {
+    console.log(`  ⚙ remapping background model "${model}" → ${FALLBACK_MODEL}`);
     return FALLBACK_MODEL;
   }
   return model;

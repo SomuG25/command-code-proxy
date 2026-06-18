@@ -84,22 +84,23 @@ server.listen(PORT, () => {
   console.log("Available models:");
   console.log("─────────────────────────────────────────────────────────");
 
-  const groups = {};
-  for (const m of ALL_MODELS) {
-    if (!groups[m.provider]) groups[m.provider] = [];
-    groups[m.provider].push(m);
-  }
+  const goModels = ALL_MODELS.filter(m => m.plan === "go");
+  const proModels = ALL_MODELS.filter(m => m.plan === "pro");
 
-  for (const [provider, models] of Object.entries(groups)) {
-    console.log(`  ${provider.toUpperCase()}`);
-    for (const m of models) {
-      console.log(`    • ${m.id.padEnd(38)} ${m.name}`);
-    }
+  console.log("  📦 GO PLAN ($1/mo — open source)");
+  for (const m of goModels) {
+    console.log(`    • ${m.id.padEnd(38)} ${m.name}`);
+  }
+  console.log("");
+  console.log("  💎 PRO PLAN ($20+/mo — premium)");
+  for (const m of proModels) {
+    console.log(`    • ${m.id.padEnd(38)} ${m.name}`);
   }
 
   console.log("");
   console.log("─────────────────────────────────────────────────────────");
-  console.log('Usage: claude --model "deepseek/deepseek-v4-pro"');
+  console.log('Default: claude --model "deepseek/deepseek-v4-pro"');
+  console.log('Switch:  /model claude-opus-4-6');
   console.log("");
   console.log("Waiting for requests...\n");
 });

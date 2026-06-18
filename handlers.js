@@ -97,16 +97,24 @@ async function handleMessages(req, res) {
     return respondError(res, 400, "invalid_request_error", "Invalid JSON body");
   }
 
-  const model = normalizeModel(body.model);
+  let model = normalizeModel(body.model);
   const isStream = body.stream === true;
   const toolCount = (body.tools || []).length;
   const msgCount = (body.messages || []).length;
 
-  // Normalize model name in body before conversion
-  body.model = model;
-
   // ── Classify and tag the request ──────────────────────────────────────
   const requestType = classifyRequest(body);
+
+  // Force DeepSeek V4 Pro for background/subagent requests — only the
+  // user's main session should use the model they picked via /model.
+  const isBackground = requestType !== "👤 user";
+  if (isBackground && model !== FALLBACK_MODEL) {
+    console.log(`  ⚙ background → forcing ${FALLBACK_MODEL} (was ${model})`);
+    model = FALLBACK_MODEL;
+  }
+
+  // Normalize model name in body before conversion
+  body.model = model;
 
   console.log(`  ├ model=${model} stream=${isStream}`);
   console.log(`  ├ messages=${msgCount} tools=${toolCount} [${requestType}]`);
